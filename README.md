@@ -4,6 +4,10 @@
 
 **Build a single agent-first dev workspace.**
 
+<img width="300" src="https://github.com/user-attachments/assets/2fa0e819-8d8a-435c-bad9-f2f147984a1f" />
+
+[Rebuilding Meta's Dev Stack Out of Meta | React Native Live](https://www.youtube.com/live/zazUsINu9AQ?si=v33vCNORWM08H9D_&t=613)
+
 ## What is huntiestack?
 
 huntiestack revolves around the `devroot` repo — a single private megarepo workspace for all development work, designed to replace your traditional `~/Development` folder.
