@@ -4,7 +4,7 @@
 
 Setup skills for **huntiestack**, my agent-first development flow.
 
-huntiestack revolves around the `devroot` repo — a single mega-repo-workspace for all development work, designed to replace your traditional `~/dev` folder.
+huntiestack revolves around the `devroot` repo — a single mega-repo-workspace for all development work, designed to replace your traditional `~/Development` folder.
 
 The repo itself is small: a folder structure, an `AGENTS.md`, a dozen bash scripts, and skills. It enables agents to checkout other repos as needed *and work across them*, and store knowledge from across sessions in a private `vault`.
 
