@@ -39,3 +39,35 @@ That fetches `devroot-template-latest/` from this repo, installs every skill fro
 #### This is a starting point!
 
 Everyone's dev setup is different. `/setup-devroot` gives you a folder structure, control plane scripts, and the `vault` repo. You're free to customise the vault as you need, as well as to uninstall my skills in `skills-lock.json` and fork them in your `skills/` folder. Build what works for you 💯.
+
+## Use directly or take inspiration
+
+The full devroot layout:
+
+```
+devroot/
+  # Optional: <user>/dotfiles — system dotfiles 
+  dotfiles/
+
+  # Working directories
+  projects/        # Project checkouts (gitignored)
+  scratch/         # Throwaway checkouts (gitignored)
+
+  # Repo scripts (`dev <script>`)
+  scripts/
+
+  # Skills (installed to .[agents|claude]|/skills/)
+  skills/          # Your skills
+  skills-lock.json # Third party skills
+
+  # Optional: <user>/vault repo — agent plans + knowledge base (private)
+  vault/
+	  memory/              # Workspace + per-repo knowledge (/reflect)
+	  plans/               # Numbered plans (/plan)
+	  index.md             # Index of all content
+	  USER.md              # Optional: Who you are and your goals
+	  COMMITTING_POLICY.md # How sessions commit here
+
+  # Optional: <user>/commit-cloud repo - private Git backups
+  .commit-cloud/   # `dev commit-cloud`
+```
