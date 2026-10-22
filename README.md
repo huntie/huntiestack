@@ -1,4 +1,4 @@
-# huntiestack
+# huntiestack (Preview)
 
 [![skills.sh](https://skills.sh/b/huntie/huntiestack)](https://skills.sh/huntie/huntiestack)
 
