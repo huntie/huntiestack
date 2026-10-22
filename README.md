@@ -4,15 +4,24 @@
 
 **Build a single agent-first dev workspace.**
 
+## What is huntiestack?
+
 huntiestack revolves around the `devroot` repo — a single private megarepo workspace for all development work, designed to replace your traditional `~/Development` folder.
 
 The repo itself is small: a folder structure, an `AGENTS.md`, a dozen bash scripts, and skills. It enables agents to checkout other repos as needed *and work across them*, and store knowledge from across sessions in a private `vault`.
 
-## Principles
+### Principles
 
 - **One development monorepo.** I often work across more than one open source repo to accomplish an idea. Agent sessions rooted at `~/devroot` are empowered to work across these. My `dotfiles` and agent skills can be maintained continuously in the same session.
 - **Shared config, skills, and context across machines.** One clone carries the entire setup to a Mac, a dev server, or a cloud agent environment. Skills load from the committed agent directories with no install step. `vault` is a live, intentionally updated knowledge base.
 - **Stacked version control and targeted FB-isms.** Scripts, skills, and IDE setup smoothing over daily workflows and a purposeful developer loop — for Git or [Sapling](https://sapling-scm.com/).
+
+### What's actually in this repo
+
+This is a public starter kit for `devroot` mirrored from my personal `huntie/devroot` repo (private).
+
+- The `/setup-devroot` and `/setup-vault` skills, installable via `npx skills`.
+- The synced `devroot-template-latest/` folder, containing the public core of devroot, that the setup skill downloads.
 
 ## Get started
 
