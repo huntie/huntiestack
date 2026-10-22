@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+#
+# First-time scaffold of vault/ as a git repo with README.md, index.md, and the committing policy; afterward only a drift check.
+#
+# The vault is resolved from the working directory rather than this file's
+# location, since the skill sits at a different depth in this repo and in an
+# .agents/skills/ install elsewhere.
+#
+# Exit codes: 0 converged, 1 error, 2 usage; 3 means something needs a human.
+
+set -euo pipefail
+
+ROOT=$(pwd -P)
+VAULT="$ROOT/vault"
+TEMPLATES=$(cd "$(dirname "$0")/../templates" && pwd -P)
+BEGIN='<!-- setup-vault:begin -->'
+END='<!-- setup-vault:end -->'
+
+REPO=""
+DRY=0
+NEEDS_HUMAN=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)
+      case "${2:-}" in
+        */*) ;;
+        *)
+          echo "setup-vault: --repo needs <owner/repo>" >&2
+          exit 2
+          ;;
+      esac
+      REPO="$2"
+      shift
+      ;;
+    --dry-run | -n) DRY=1 ;;
+    -h | --help)
+      printf '%s\n' \
+        'Usage: skills/setup-vault/scripts/setup-vault [--repo <owner/repo>] [--dry-run]' \
+        '' \
+        'Run from the workspace root. Makes vault/ a git repository holding README.md,' \
+        'index.md, COMMITTING_POLICY.md, and .gitignore from the templates beside this' \
+        'script. An existing vault is never rewritten; the conventions between the' \
+        'setup-vault markers in README.md are compared with the template and a' \
+        'difference is reported as drift.' \
+        '' \
+        '  --repo         GitHub repository for origin, created private if missing.' \
+        '  --dry-run      Report planned changes without touching anything.' \
+        '' \
+        'Exits 0 converged, 1 error, 2 usage; 3 when a human is needed: no commit yet,' \
+        'or drift.'
+      exit 0
+      ;;
+    *)
+      echo "setup-vault: unknown option '$1'" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+say() { printf '  %s\n' "$*"; }
+
+run() {
+  if [ "$DRY" -eq 1 ]; then
+    printf '  [dry-run] %s\n' "$*"
+  else
+    "$@"
+  fi
+}
+
+# The marked region of a file, markers included; empty when there is none.
+region() {
+  awk -v b="$BEGIN" -v e="$END" '$0 == b { p = 1 } p { print } $0 == e { p = 0 }' "$1"
+}
+
+if [ ! -f "$ROOT/AGENTS.md" ] || [ ! -d "$ROOT/scripts" ]; then
+  echo "setup-vault: run from the workspace root (no AGENTS.md and scripts/ here: $ROOT)" >&2
+  exit 2
+fi
+
+printf 'devroot: %s\n' "$ROOT"
+
+EXISTING=0
+if [ -d "$VAULT/.git" ]; then
+  EXISTING=1
+  say "ok       vault"
+else
+  say "init     vault"
+  run mkdir -p "$VAULT"
+  run git -C "$VAULT" init -q -b main
+fi
+
+if [ ! -f "$VAULT/README.md" ]; then
+  say "write    vault/README.md"
+  run cp "$TEMPLATES/README.md" "$VAULT/README.md"
+elif [ -z "$(region "$VAULT/README.md")" ]; then
+  say "note     vault/README.md has no setup-vault markers — wrap its conventions in them, or delete the file to regenerate"
+  NEEDS_HUMAN=1
+elif [ "$(region "$VAULT/README.md")" = "$(region "$TEMPLATES/README.md")" ]; then
+  say "ok       vault/README.md"
+else
+  say "drift    vault/README.md conventions differ from the template beside this script:"
+  diff -u <(region "$TEMPLATES/README.md") <(region "$VAULT/README.md") | sed -n '3,$p' | sed 's/^/           /' || true
+  NEEDS_HUMAN=1
+fi
+
+if [ -f "$VAULT/index.md" ]; then
+  say "ok       vault/index.md"
+else
+  say "write    vault/index.md"
+  run cp "$TEMPLATES/index.md" "$VAULT/index.md"
+fi
+
+for pair in "COMMITTING_POLICY.md:COMMITTING_POLICY.md" "gitignore:.gitignore"; do
+  tpl=${pair%%:*}; name=${pair#*:}
+  if [ -f "$VAULT/$name" ]; then
+    say "ok       vault/$name"
+  else
+    say "write    vault/$name"
+    run cp "$TEMPLATES/$tpl" "$VAULT/$name"
+  fi
+done
+
+if [ -n "$REPO" ] && [ "$EXISTING" -eq 1 ]; then
+  say "note     vault already exists — leaving its remotes alone; --repo is for first-time setup"
+  NEEDS_HUMAN=1
+elif [ -n "$REPO" ]; then
+  if command -v gh > /dev/null && gh auth status > /dev/null 2>&1; then
+    if gh repo view "$REPO" > /dev/null 2>&1; then
+      say "ok       $REPO"
+    else
+      say "create   $REPO (private)"
+      run gh repo create "$REPO" --private
+    fi
+    if [ "$(gh config get git_protocol)" = "ssh" ]; then
+      url="git@github.com:$REPO.git"
+    else
+      url="https://github.com/$REPO.git"
+    fi
+  else
+    url="https://github.com/$REPO.git"
+    say "note     assuming $REPO exists on GitHub (no gh to check or create it)"
+    NEEDS_HUMAN=1
+  fi
+  current=""
+  if [ -d "$VAULT/.git" ]; then
+    current=$(git -C "$VAULT" remote get-url origin 2> /dev/null || true)
+  fi
+  if [ -z "$current" ]; then
+    say "remote   origin -> $url"
+    run git -C "$VAULT" remote add origin "$url"
+  elif [ "$current" = "$url" ]; then
+    say "ok       origin"
+  else
+    say "note     origin is $current, not $url — leaving it"
+    NEEDS_HUMAN=1
+  fi
+fi
+
+if [ ! -d "$VAULT/.git" ] || ! git -C "$VAULT" rev-parse --verify -q HEAD > /dev/null 2>&1; then
+  say "note     vault has no commits yet — commit, then: git -C vault push -u origin main"
+  NEEDS_HUMAN=1
+fi
+
+[ "$NEEDS_HUMAN" -eq 0 ] || exit 3

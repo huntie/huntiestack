@@ -1,0 +1,3 @@
+# Maintained by scripts/sync-skills and `npx skills`
+.claude/skills/** linguist-generated=true
+.agents/skills/** linguist-generated=true

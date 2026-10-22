@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# Link skills/ into .claude/skills and .agents/skills.
+#
+# Links every skill in skills/, including those under a _group/ directory,
+# into the committed agent directories, pruning
+# links whose skill is gone. Run once after adding or removing a skill in
+# skills/ — the links are committed, so a bare clone needs no run at all.
+#
+# Convergent, so running it again at any time is safe. Real directories in the
+# agent directories are third-party skills installed by `npx skills`, and are
+# left alone.
+#
+# Exit codes: 0 converged, 1 error, 2 usage; 3 means a name clash with a
+# third-party skill needs a human.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+SKILLS_DIR="$ROOT/skills"
+
+DRY=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run | -n) DRY=1 ;;
+    -h | --help)
+      printf '%s\n' \
+        'Usage: scripts/sync-skills [--dry-run]' \
+        '' \
+        'Links each skill in skills/ into .claude/skills and .agents/skills, pruning' \
+        'links whose skill was deleted. Run once after adding or removing a skill, and' \
+        'commit the result.' \
+        '' \
+        '  --dry-run      Report planned changes without touching anything.' \
+        '' \
+        'Exits 0 converged, 1 error, 2 usage; 3 on a name clash with a' \
+        'third-party skill.'
+      exit 0
+      ;;
+    *)
+      echo "sync-skills: unknown option '$1'" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+say() { printf '  %s\n' "$*"; }
+
+run() {
+  if [ "$DRY" -eq 1 ]; then
+    printf '  [dry-run] %s\n' "$*"
+  else
+    "$@"
+  fi
+}
+
+CLASH=0
+
+ensure_link() {
+  local target="$1" dest="$2"
+  if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$target" ]; then
+    return
+  fi
+  # A real directory here is a third-party skill installed by `npx skills`;
+  # ln -sfn into it would land the link inside the directory, so leave it to
+  # a human to rename one of the two.
+  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+    say "clash    ${dest#$ROOT/} is a third-party skill with the same name"
+    CLASH=1
+    return
+  fi
+  say "link     ${dest#$ROOT/}"
+  run ln -sfn "$target" "$dest"
+}
+
+printf 'devroot: %s\n' "$ROOT"
+
+run mkdir -p "$ROOT/.claude/skills" "$ROOT/.agents/skills"
+
+# link_skill <path relative to skills/> — the link is named after the skill,
+# whatever directory it sits in.
+link_skill() {
+  local rel="$1" name
+  name=$(basename "$rel")
+  ensure_link "../../skills/$rel" "$ROOT/.claude/skills/$name"
+  ensure_link "../../skills/$rel" "$ROOT/.agents/skills/$name"
+}
+
+# A directory whose name starts with "_" is a group, not a skill: each of its
+# children is linked by its own name, one level deep. Skill names stay unique
+# across the tree, which the clash check enforces. _public-overrides/ is the
+# exception: its skills are public copies that publish-huntiestack ships in place
+# of the private ones, and sessions here use the private ones.
+for src in "$SKILLS_DIR"/*/; do
+  [ -d "$src" ] || continue
+  name=$(basename "$src")
+  case "$name" in
+    _public-overrides) ;;
+    _*)
+      for child in "$src"*/; do
+        [ -d "$child" ] || continue
+        link_skill "$name/$(basename "$child")"
+      done
+      ;;
+    *) link_skill "$name" ;;
+  esac
+done
+
+# Delete a skill and its links would otherwise dangle here forever.
+for dir in "$ROOT/.claude/skills" "$ROOT/.agents/skills"; do
+  for l in "$dir"/*; do
+    if [ -L "$l" ] && [ ! -e "$l" ]; then
+      say "prune    ${l#$ROOT/} (dangling)"
+      run rm "$l"
+    fi
+  done
+done
+
+if [ "$CLASH" -eq 1 ]; then
+  echo "sync-skills: a skill in skills/ shares a name with an installed third-party skill — rename one" >&2
+  exit 3
+fi
+
+printf 'done\n'

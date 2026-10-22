@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+#
+# Create a devroot workspace from the huntiestack template, with the public skills installed and an initial commit.
+#
+# The template is fetched fresh from the public repo through gh, so a run
+# always starts from the latest published workspace files; --template takes a
+# local copy instead. Skills come from the public skills repo through
+# `npx skills`, installed for two agents so that the copies land under
+# .agents/skills with links from .claude/skills, the layout the workspace's
+# own scripts keep. The workspace's own setup then runs for the GitHub user
+# given, whose dotfiles and vault repos it brings in when they exist.
+#
+# Exit codes: 0 ready, 1 error, 2 usage; 3 when setup left something for a
+# human, such as a dotfiles or vault repo it could not clone.
+
+set -euo pipefail
+
+TEMPLATE_REPO="huntie/huntiestack"
+TEMPLATE_DIR="devroot-template-latest"
+SKILLS_REPO="huntie/skills"
+
+DIR=""
+USER_OWNER=""
+TEMPLATE=""
+DRY=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --user)
+      case "${2:-}" in
+        '' | */* | -*)
+          echo "setup-devroot: --user needs a GitHub user or org" >&2
+          exit 2
+          ;;
+      esac
+      USER_OWNER="$2"
+      shift
+      ;;
+    --template)
+      [ $# -ge 2 ] || {
+        echo "setup-devroot: --template needs a directory" >&2
+        exit 2
+      }
+      TEMPLATE="$2"
+      shift
+      ;;
+    --dry-run | -n) DRY=1 ;;
+    -h | --help)
+      printf '%s\n' \
+        'Usage: setup-devroot <dir> --user <owner> [--template <path>] [--dry-run]' \
+        '' \
+        'Creates a devroot workspace at <dir>, which must be new or empty: the' \
+        "$TEMPLATE_DIR/ files from $TEMPLATE_REPO, fetched fresh, then every" \
+        "skill from $SKILLS_REPO installed with npx skills, then an initial commit," \
+        'then the workspace'\''s own scripts/setup. Needs git, gh signed in, and npx.' \
+        '' \
+        '  --user         GitHub user or org whose dotfiles and vault repos setup' \
+        '                 brings in, <owner>/dotfiles and <owner>/vault, when they' \
+        '                 exist; a missing one is a note from setup, not an error.' \
+        '  --template     Copy the workspace files from this local directory instead' \
+        '                 of fetching them.' \
+        '  --dry-run      Report planned steps without touching anything.' \
+        '' \
+        'Exits 0 ready, 1 error, 2 usage; 3 when setup left something for a human.'
+      exit 0
+      ;;
+    -*)
+      echo "setup-devroot: unknown option '$1'" >&2
+      exit 2
+      ;;
+    *)
+      [ -z "$DIR" ] || {
+        echo "setup-devroot: expected one directory, got '$DIR' and '$1'" >&2
+        exit 2
+      }
+      DIR="$1"
+      ;;
+  esac
+  shift
+done
+
+[ -n "$DIR" ] || {
+  echo "setup-devroot: expected the directory to create, such as ~/devroot" >&2
+  exit 2
+}
+[ -n "$USER_OWNER" ] || {
+  echo "setup-devroot: --user <owner> names whose dotfiles and vault repos to bring in" >&2
+  exit 2
+}
+
+say() { printf '  %s\n' "$*"; }
+
+run() {
+  if [ "$DRY" -eq 1 ]; then
+    printf '  [dry-run] %s\n' "$*"
+  else
+    "$@"
+  fi
+}
+
+for tool in git npx; do
+  command -v "$tool" > /dev/null || {
+    echo "setup-devroot: needs $tool" >&2
+    exit 1
+  }
+done
+if [ -z "$TEMPLATE" ]; then
+  command -v gh > /dev/null && gh auth status > /dev/null 2>&1 || {
+    echo "setup-devroot: needs gh, signed in (gh auth login), to fetch the template" >&2
+    exit 1
+  }
+else
+  [ -f "$TEMPLATE/AGENTS.md" ] && [ -d "$TEMPLATE/scripts" ] || {
+    echo "setup-devroot: $TEMPLATE is not a devroot template (no AGENTS.md and scripts/)" >&2
+    exit 1
+  }
+fi
+
+case "$DIR" in
+  "~"/*) DIR="$HOME/${DIR#"~"/}" ;;
+esac
+if [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2> /dev/null)" ]; then
+  echo "setup-devroot: $DIR exists and is not empty" >&2
+  exit 1
+fi
+
+printf 'devroot: %s\n' "$DIR"
+
+# #region the workspace files
+
+if [ -n "$TEMPLATE" ]; then
+  say "copy     $TEMPLATE -> $DIR"
+  run mkdir -p "$DIR"
+  run cp -R "$TEMPLATE/." "$DIR/"
+else
+  say "fetch    $TEMPLATE_REPO/$TEMPLATE_DIR -> $DIR"
+  if [ "$DRY" -eq 0 ]; then
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    gh api "repos/$TEMPLATE_REPO/tarball/HEAD" > "$tmp/template.tar.gz"
+    tar -xzf "$tmp/template.tar.gz" -C "$tmp"
+    src=$(find "$tmp" -mindepth 2 -maxdepth 2 -type d -name "$TEMPLATE_DIR" | head -1)
+    [ -n "$src" ] || {
+      echo "setup-devroot: $TEMPLATE_REPO has no $TEMPLATE_DIR/ directory" >&2
+      exit 1
+    }
+    mkdir -p "$DIR"
+    cp -R "$src/." "$DIR/"
+  fi
+fi
+
+say "init     git repository on main"
+run git -C "$DIR" init -q -b main
+
+# #endregion
+# #region skills
+
+say "install  $SKILLS_REPO skills -> .agents/skills, .claude/skills"
+# From inside the workspace, so the install is project-level there.
+if [ "$DRY" -eq 1 ]; then
+  say "[dry-run] npx -y skills add $SKILLS_REPO --skill '*' --agent claude-code codex -y"
+else
+  (cd "$DIR" && npx -y skills add "$SKILLS_REPO" --skill '*' --agent claude-code codex -y > /dev/null)
+fi
+
+# #endregion
+# #region the initial commit
+
+say "commit   Initialize devroot from huntiestack"
+run git -C "$DIR" add -A
+run git -C "$DIR" commit -q -m "Initialize devroot from huntiestack"
+
+# #endregion
+# #region the workspace's own setup
+
+# Exit 3, a checkout setup could not clone, passes through as this script's.
+printf '\n'
+status=0
+if [ "$DRY" -eq 1 ]; then
+  say "[dry-run] scripts/setup --user $USER_OWNER"
+else
+  "$DIR/scripts/setup" --user "$USER_OWNER" || status=$?
+  [ "$status" -eq 0 ] || [ "$status" -eq 3 ] || exit "$status"
+fi
+
+# #endregion
+
+[ "$DRY" -eq 1 ] || say "ok       $DIR"
+exit "$status"

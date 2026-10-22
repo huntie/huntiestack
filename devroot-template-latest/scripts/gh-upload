@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+#
+# Upload screenshots or screen recordings to GitHub and print Markdown for a PR body.
+#
+# Uses the same endpoint the web UI uses for drag-and-drop, so the result is a
+# github.com/user-attachments URL with no external service. The endpoint is
+# undocumented: it takes a normal gh token, accepts only images and video, and
+# only for a repository the token can push to, which in the fork layout is
+# origin. An asset stays readable only by the uploader until it is referenced
+# from a posted PR or issue body on that repository; posting is what publishes
+# it, so the Markdown belongs in the PR description, not only in a commit.
+#
+# When the endpoint fails, or --release is given, the file goes onto a release
+# tagged "assets" through the documented release API instead. Those URLs are
+# public at once on a public repository and uglier. Anything that is not an
+# image or a video is refused; the documented release API covers other files.
+#
+# Exit codes: 0 uploaded, 1 error, 2 usage.
+
+set -euo pipefail
+
+REPO=""
+RELEASE=0
+FILES=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)
+      [ $# -ge 2 ] && case "$2" in */*) true ;; *) false ;; esac || {
+        echo "gh-upload: --repo needs <owner/repo>" >&2
+        exit 2
+      }
+      REPO="$2"
+      shift
+      ;;
+    --release) RELEASE=1 ;;
+    -h | --help)
+      printf '%s\n' \
+        'Usage: scripts/gh-upload <file>... [--repo <owner/repo>] [--release]' \
+        '' \
+        'Uploads each screenshot or recording as a GitHub user attachment and prints' \
+        'one Markdown line per file: an image tag for images, a bare URL for video,' \
+        'which GitHub renders as a player. Only images and video are accepted. The' \
+        'repository defaults to the origin remote of the git checkout containing' \
+        'the first file, the fork in this layout.' \
+        '' \
+        'An attachment becomes readable by others when it is referenced from a' \
+        'posted PR or issue body on that repository. Put the Markdown in the PR' \
+        'description; a commit message alone publishes nothing.' \
+        '' \
+        '  --repo      Repository whose visibility the attachment inherits; the token' \
+        '              must be able to push to it.' \
+        '  --release   Skip the attachment endpoint and upload to a release tagged' \
+        '              "assets" instead. Also the automatic fallback when the endpoint' \
+        '              fails. Public at once on a public repository.' \
+        '' \
+        'Exits 0 uploaded, 1 error, 2 usage.'
+      exit 0
+      ;;
+    -*)
+      echo "gh-upload: unknown option '$1'" >&2
+      exit 2
+      ;;
+    *) FILES+=("$1") ;;
+  esac
+  shift
+done
+
+[ "${#FILES[@]}" -gt 0 ] || {
+  echo "gh-upload: expected at least one file" >&2
+  exit 2
+}
+for f in "${FILES[@]}"; do
+  [ -f "$f" ] || {
+    echo "gh-upload: no such file: $f" >&2
+    exit 1
+  }
+  case "$(file -b --mime-type "$f")" in
+    image/* | video/*) ;;
+    *)
+      echo "gh-upload: $f is not an image or a video" >&2
+      exit 1
+      ;;
+  esac
+done
+
+command -v gh > /dev/null && gh auth status > /dev/null 2>&1 || {
+  echo "gh-upload: needs gh, authenticated" >&2
+  exit 1
+}
+
+# The origin remote of the checkout holding the first file, as owner/repo.
+if [ -z "$REPO" ]; then
+  url=$(git -C "$(dirname "${FILES[0]}")" remote get-url origin 2> /dev/null || true)
+  REPO=$(printf '%s' "$url" | sed -E 's#^(git@github\.com:|https://github\.com/|ssh://git@github\.com/)##; s#\.git$##')
+  case "$REPO" in
+    */*) ;;
+    *)
+      echo "gh-upload: no GitHub origin remote around ${FILES[0]}; pass --repo <owner/repo>" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+say() { printf '  %s\n' "$*" >&2; }
+
+# Markdown for an uploaded file: an image tag for images, a bare URL for
+# video, which GitHub renders as a player and an image tag would break.
+markdown() {
+  case "$2" in
+    video/*) printf '%s\n' "$3" ;;
+    *) printf '![%s](%s)\n' "$1" "$3" ;;
+  esac
+}
+
+# Upload one file to the release tagged "assets", creating the release once.
+release_upload() {
+  local file=$1 name=$2
+  if ! gh release view assets --repo "$REPO" > /dev/null 2>&1; then
+    say "release  create $REPO assets"
+    gh release create assets --repo "$REPO" --title assets --latest=false \
+      --notes "Attachments uploaded by scripts/gh-upload. Not a software release." > /dev/null
+  fi
+  say "release  $name -> $REPO assets"
+  gh release upload assets "$file" --repo "$REPO" --clobber > /dev/null
+  printf 'https://github.com/%s/releases/download/assets/%s\n' "$REPO" "$name"
+}
+
+repo_id=""
+token=""
+for file in "${FILES[@]}"; do
+  name=$(basename "$file")
+  mime=$(file -b --mime-type "$file")
+  if [ "$RELEASE" -eq 1 ]; then
+    markdown "$name" "$mime" "$(release_upload "$file" "$name")"
+    continue
+  fi
+  [ -n "$repo_id" ] || repo_id=$(gh api "repos/$REPO" --jq .id)
+  [ -n "$token" ] || token=$(gh auth token)
+  enc_name=$(printf '%s' "$name" | jq -sRr @uri)
+  enc_mime=$(printf '%s' "$mime" | jq -sRr @uri)
+  body=$(mktemp)
+  status=$(curl -s -o "$body" -w '%{http_code}' -X POST \
+    "https://uploads.github.com/user-attachments/assets?name=$enc_name&content_type=$enc_mime&repository_id=$repo_id" \
+    -H "Authorization: Bearer $token" -H "Accept: application/json" -H "Content-Type: $mime" \
+    --data-binary "@$file")
+  asset=$(jq -r '.url // empty' "$body" 2> /dev/null || true)
+  rm -f "$body"
+  if [ "$status" = "201" ] && [ -n "$asset" ]; then
+    say "upload   $name -> $REPO (attachment)"
+    markdown "$name" "$mime" "$asset"
+  else
+    say "note     attachment endpoint returned $status for $name; using the release path"
+    markdown "$name" "$mime" "$(release_upload "$file" "$name")"
+  fi
+done

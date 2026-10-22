@@ -1,0 +1,19 @@
+/projects/*
+!/projects/.gitkeep
+/scratch/*
+!/scratch/.gitkeep
+/tools/
+
+# Optional top level checkouts (scripts/setup)
+/dotfiles/
+/vault/
+/.commit-cloud/
+
+# Generated VS Code entry points (scripts/sync-workspace)
+/*.code-workspace
+
+# Local only VS Code settings
+/.vscode/
+
+# Editor metadata
+.cogito-folder.json

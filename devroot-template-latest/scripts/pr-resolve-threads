@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+#
+# Resolve review threads on a pull request after a push that addressed them.
+#
+# A resubmit rewrites the lines reviewers commented on, and GitHub marks those
+# threads outdated without resolving them, so the reviewer still sees them open.
+# This resolves the outdated, unresolved threads on the PR the current branch or
+# commit was submitted as (per scripts/pr-info), or on --pr. With --all it
+# resolves every unresolved thread, for a push that addressed comments whose
+# lines did not change. A thread the author of this run did not open is still
+# resolvable; GitHub lets any collaborator resolve.
+#
+# Exit codes: 0 done (including nothing to resolve), 1 error, 2 usage.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+
+usage() {
+  printf '%s\n' \
+    'Usage: scripts/pr-resolve-threads [<checkout>] [--pr <number> | --rev <rev>] [--all] [--dry-run]' \
+    '' \
+    'Resolves the unresolved review threads a push made outdated on the PR of the' \
+    'current branch or commit, found with scripts/pr-info. Prints one line per' \
+    'thread: the path, the first line of its first comment, and resolved or kept.' \
+    '' \
+    '  <checkout>   Path to the checkout, relative to the root or absolute.' \
+    '               Defaults to the checkout containing the current directory.' \
+    '  --pr         The PR number, instead of looking it up from the branch.' \
+    '  --rev        Sapling checkouts: the commit whose PR to use (pr-info --rev).' \
+    '  --all        Resolve every unresolved thread, not only the outdated ones.' \
+    '  --dry-run    Print what would be resolved and change nothing.' \
+    '' \
+    'Exits 0 done, 1 error, 2 usage.'
+}
+
+dir_arg=""
+pr=""
+rev=""
+all=0
+dry=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --all) all=1 ;;
+    --dry-run) dry=1 ;;
+    --pr)
+      [ $# -ge 2 ] || {
+        echo "pr-resolve-threads: --pr needs a number" >&2
+        exit 2
+      }
+      pr="$2"
+      shift
+      ;;
+    --rev)
+      [ $# -ge 2 ] || {
+        echo "pr-resolve-threads: --rev needs a revset" >&2
+        exit 2
+      }
+      rev="$2"
+      shift
+      ;;
+    -*)
+      echo "pr-resolve-threads: unknown option '$1'" >&2
+      exit 2
+      ;;
+    *)
+      [ -z "$dir_arg" ] || {
+        echo "pr-resolve-threads: expected at most one checkout" >&2
+        exit 2
+      }
+      dir_arg="$1"
+      ;;
+  esac
+  shift
+done
+
+command -v gh > /dev/null || {
+  echo "pr-resolve-threads: needs the GitHub CLI (gh)" >&2
+  exit 1
+}
+
+info_args=()
+[ -z "$dir_arg" ] || info_args+=("$dir_arg")
+[ -z "$rev" ] || info_args+=(--rev "$rev")
+info=$("$ROOT/scripts/pr-info" "${info_args[@]}" --json)
+[ "$info" != "null" ] || {
+  [ -n "$pr" ] || {
+    echo "pr-resolve-threads: the branch has no pull request; pass --pr" >&2
+    exit 1
+  }
+}
+repo=$(printf '%s' "$info" | sed -nE 's/.*"repo": *"([^"]+)".*/\1/p')
+if [ -z "$repo" ]; then
+  # No PR for the branch: take the repository pr-info would use, via gh.
+  dir=${dir_arg:-$(git rev-parse --show-toplevel)}
+  case "$dir" in /*) ;; *) dir="$ROOT/$dir" ;; esac
+  repo=$(git -C "$dir" remote get-url upstream 2> /dev/null || git -C "$dir" remote get-url origin)
+  repo=$(printf '%s' "$repo" | sed -nE 's#^(git@github\.com:|https://github\.com/|ssh://git@github\.com/)([^/]+/[^/]+)$#\2#p' | sed -E 's#\.git$##')
+fi
+[ -n "$pr" ] || pr=$(printf '%s' "$info" | sed -nE 's/.*"number": *([0-9]+).*/\1/p')
+owner="${repo%%/*}"
+name="${repo#*/}"
+
+threads=$(gh api graphql -f query='
+  query($owner: String!, $name: String!, $pr: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100) {
+          nodes { id isResolved isOutdated path comments(first: 1) { nodes { body } } }
+        }
+      }
+    }
+  }' -F owner="$owner" -F name="$name" -F pr="$pr" \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
+    | select(.isResolved | not)
+    | [.id, (.isOutdated | tostring), .path, (.comments.nodes[0].body | split("\n")[0] | .[0:70])]
+    | @tsv')
+
+resolved=0
+kept=0
+while IFS=$'\t' read -r id outdated path summary; do
+  [ -n "$id" ] || continue
+  if [ "$all" -eq 1 ] || [ "$outdated" = "true" ]; then
+    if [ "$dry" -eq 0 ]; then
+      gh api graphql -f query='
+        mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { isResolved } } }' \
+        -F id="$id" > /dev/null
+    fi
+    printf '  %-8s %s: %s\n' "$([ "$dry" -eq 1 ] && echo would || echo resolved)" "$path" "$summary"
+    resolved=$((resolved + 1))
+  else
+    printf '  %-8s %s: %s\n' kept "$path" "$summary"
+    kept=$((kept + 1))
+  fi
+done <<< "$threads"
+
+echo "#$pr on $repo: $resolved resolved, $kept kept open"

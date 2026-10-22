@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+#
+# Run a devroot script from anywhere, or print a path in the workspace.
+#
+#   dev help                           index of the devroot scripts
+#   dev checkout react/react-native    run scripts/checkout
+#   dev                                print the workspace root
+#   dev react-native                   print projects/react-native
+#   eval "$(dev init)"                 make the last two cd instead, in bash or zsh
+#
+# Linked by scripts/setup into ~/.local/bin, so it works in any shell with no
+# profile changes; dev.fish is the fish function, with cd built in. The root
+# is this file's real location, so each devroot links its own copy, and
+# $DEVROOT overrides it.
+#
+# Exit codes: 0 done, 2 usage or unknown name; a script's own otherwise.
+
+set -euo pipefail
+
+self=${BASH_SOURCE[0]}
+while [ -L "$self" ]; do
+  target=$(readlink "$self")
+  case "$target" in
+    /*) self=$target ;;
+    *) self="$(dirname "$self")/$target" ;;
+  esac
+done
+ROOT=${DEVROOT:-$(cd "$(dirname "$self")/.." && pwd -P)}
+
+usage() {
+  printf '%s\n' \
+    'Usage: dev <script> [args...]' \
+    '       dev [<project>]' \
+    '       eval "$(dev init)"' \
+    '' \
+    'Runs scripts/<script> in the devroot this command is linked from, from any' \
+    'directory. Alone it prints the workspace root, and with a project name the' \
+    'path of that checkout under projects/, for cd "$(dev expo)". In bash or zsh,' \
+    'eval "$(dev init)" in the shell profile defines a dev function that cds for' \
+    'those two forms itself; the fish function does so already.' \
+    '' \
+    'Exits 0 done, 2 usage or unknown name; a script'\''s own otherwise.'
+}
+
+case "${1:-}" in
+  '')
+    printf '%s\n' "$ROOT"
+    exit 0
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  init)
+    cat <<'FN'
+dev() {
+  local root
+  root=$(command dev) || return
+  if [ $# -eq 0 ]; then
+    cd "$root"
+  elif [ ! -x "$root/scripts/$1" ] && [ -d "$root/projects/$1" ]; then
+    cd "$root/projects/$1"
+  else
+    command dev "$@"
+  fi
+}
+FN
+    exit 0
+    ;;
+  -*)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+script="$ROOT/scripts/$1"
+if [ -x "$script" ]; then
+  shift
+  exec "$script" "$@"
+fi
+if [ -d "$ROOT/projects/$1" ]; then
+  printf '%s\n' "$ROOT/projects/$1"
+  exit 0
+fi
+
+names=
+for f in "$ROOT"/scripts/*; do
+  [ -x "$f" ] && names="$names ${f##*/}"
+done
+echo "dev: no script or checkout '$1' in $ROOT" >&2
+echo "     scripts:$names" >&2
+exit 2

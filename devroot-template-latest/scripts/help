@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+#
+# This index; `help <script>` prints that script's full --help.
+#
+# The root manpage for scripts/. Each summary in the SCRIPTS table is read live
+# from the first line of that script's header comment, so the index cannot
+# drift.
+#
+# Exit codes: 0 ok, 1 error, 2 usage.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+SCRIPTS_DIR="$ROOT/scripts"
+
+case "${1:-}" in
+  '') ;;
+  -h | --help)
+    printf '%s\n' \
+      'Usage: scripts/help [<script>]' \
+      '' \
+      'Prints an index of every script in scripts/, each summarized from' \
+      'the first line of its own header comment. With a script name, shows' \
+      'that script'\''s full --help.' \
+      '' \
+      'Exits 0 ok, 1 error, 2 usage.'
+    exit 0
+    ;;
+  -*)
+    echo "help: unknown option '$1'" >&2
+    exit 2
+    ;;
+  *)
+    script="$SCRIPTS_DIR/$1"
+    if [ ! -f "$script" ] || [ ! -x "$script" ]; then
+      echo "help: no script '$1' in scripts/" >&2
+      exit 2
+    fi
+    exec "$script" --help
+    ;;
+esac
+
+# A script's one-line summary: the first `# ` line after the shebang, with any
+# trailing period dropped for the table.
+summary() {
+  awk 'NR > 1 && /^# / { sub(/\.$/, "", $0); print substr($0, 3); exit }' "$1"
+}
+
+names=()
+summaries=()
+width=0
+for f in "$SCRIPTS_DIR"/*; do
+  [ -f "$f" ] && [ -x "$f" ] || continue
+  name="${f##*/}"
+  names+=("$name")
+  summaries+=("$(summary "$f")")
+  if [ "${#name}" -gt "$width" ]; then
+    width=${#name}
+  fi
+done
+
+printf 'devroot scripts — tooling for this workspace.\n'
+
+printf '\nUSAGE\n'
+printf '  %s\n' \
+  'dev <script> [flags]         from any directory, once setup has run' \
+  './scripts/<script> [flags]   from the devroot root (any environment)'
+
+printf '\nSCRIPTS\n'
+for i in "${!names[@]}"; do
+  printf '  %-*s%s\n' "$((width + 4))" "${names[$i]}" "${summaries[$i]}"
+done
+
+printf '\nEXAMPLES\n'
+printf '  %s\n' \
+  'dev setup' \
+  'dev checkout react/react-native@main' \
+  'dev help checkout'
+
+printf '\nLEARN MORE\n'
+printf '  %s\n' \
+  'Every script takes --help for flags and details.' \
+  'Exit code 3 means the script finished but something needs a human.'

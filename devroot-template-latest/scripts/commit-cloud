@@ -1,0 +1,566 @@
+#!/usr/bin/env bash
+#
+# Back up and restore draft Sapling stacks across machines.
+#
+# A stand-in for Meta's commit cloud, which open-source Sapling disables for
+# git repos. Sapling checkouts only (devroot.vcs=sapling), and opt-in: the
+# first `backup` clones the repo to .commit-cloud/ at the root, and until then
+# `restore` and the scripts/pull hook do nothing.
+#
+# Design
+#
+# - One private repo, <gh user>/commit-cloud or git config devroot.commitCloud,
+#   holds one git bundle per draft head at <repo>/<head>.bundle, shared by
+#   every machine and devroot slot. A bundle carries the original objects, so
+#   a restored commit keeps its hash, author, dates and branches, and holds
+#   only the commits above the remote bookmarks, so nothing is seeded.
+#   <head>.txt beside it names the machine, the time and the commits.
+# - Each checkout records the heads it has synced in
+#   <git dir>/commit-cloud-heads, so the set of heads converges: any machine
+#   may add or retract a head, and the others follow at their next restore.
+# - A retraction is a <head>.hidden tombstone beside the bundle, never a
+#   deletion; unhiding a stack and backing up again revives it.
+# - Restoring sets refs/visibleheads/<head>, which Sapling shows as a draft
+#   stack, recreates the branches at it, and bookmarks it
+#   <host>/backup-<date>[-N], dated by the tip commit so an amended stack keeps
+#   its name. Bookmarks never travel in bundles and go with their head.
+#
+# Workflow
+#
+# 1. Back up, explicitly: `commit-cloud backup`. Every draft stack in the
+#    Sapling checkouts goes up, and anything new from other machines comes down.
+# 2. Pull on another machine: scripts/pull runs `commit-cloud restore`, and the
+#    stacks appear in sl smartlog beside that machine's own, not checked out.
+#    It also says when that machine's own stacks are behind.
+# 3. Resume with git switch <branch> or sl goto <bookmark>. Commits on top are
+#    new work for the next backup.
+# 4. Hide or amend anywhere. The next backup from that machine tombstones the
+#    old head, and the next restore elsewhere hides it, unless the working copy
+#    or one of the user's own branches sits on it there. A stack hidden
+#    locally is never restored again.
+#
+# Exit codes: 0 synced, 1 error, 2 usage; 3 means something needs a human.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+CC_DIR="$ROOT/.commit-cloud"
+RESTORE_ONLY=
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h | --help)
+      printf '%s\n' \
+        'Usage: scripts/commit-cloud <backup|restore> [<checkout>...]' \
+        '' \
+        'Shares the draft stacks of Sapling checkouts (devroot.vcs=sapling) across' \
+        'machines through the private commit-cloud repo. A restored commit keeps' \
+        'its hash, author and dates, and arrives with its branches.' \
+        '' \
+        'A restore never touches the working copy: the stack shows in sl smartlog' \
+        'with its branches and a <host>/backup-<date> bookmark, and git switch' \
+        '<branch> or sl goto <bookmark> resumes it. Hiding, amending or building on' \
+        'a stack retracts its old head at this machine'\''s next backup, and the' \
+        'other machines hide it at their next restore unless work sits on it' \
+        'there. The repo keeps every bundle: a retracted head gets a <head>.hidden' \
+        'tombstone beside it.' \
+        '' \
+        '  backup       Send this machine'\''s stacks, then bring in the rest.' \
+        '  restore      Bring in the rest and send nothing. scripts/pull runs this;' \
+        '               it also reports stacks here the repo lacks. Without a' \
+        '               .commit-cloud clone at the root it does nothing.' \
+        '  <checkout>   Path to a checkout, relative to the root or absolute.' \
+        '               Defaults to every Sapling checkout under projects/.' \
+        '' \
+        'The repo is <gh user>/commit-cloud unless git config devroot.commitCloud' \
+        'names another, as owner/repo or a URL. It is private and never a fork,' \
+        'and the first backup clones it to .commit-cloud/.' \
+        '' \
+        'Exits 0 synced, 1 error, 2 usage; 3 when the repo is unreachable, the' \
+        'push is rejected, or a stack cannot be restored.'
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "commit-cloud: unknown option '$1'" >&2
+      exit 2
+      ;;
+    backup | restore)
+      [ -z "$RESTORE_ONLY" ] || break
+      [ "$1" = restore ] && RESTORE_ONLY=1 || RESTORE_ONLY=0
+      shift
+      ;;
+    *) break ;;
+  esac
+done
+[ -n "$RESTORE_ONLY" ] || {
+  echo "commit-cloud: say what to do: backup or restore (--help for details)" >&2
+  exit 2
+}
+
+say() { printf '  %s\n' "$*"; }
+
+NEEDS_HUMAN=0
+
+host=$(scutil --get LocalHostName 2> /dev/null || hostname -s)
+host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+producer="$host/${ROOT##*/}"
+
+# #region the commit-cloud checkout
+
+commit_cc() {
+  [ -n "$(git -C "$CC_DIR" status --porcelain)" ] || return 0
+  git -C "$CC_DIR" add -A
+  git -C "$CC_DIR" commit --quiet --no-verify --no-gpg-sign -m "$producer: Update backups"
+}
+
+ensure_cc() {
+  local repo
+  if [ ! -d "$CC_DIR/.git" ]; then
+    repo=$(git -C "$ROOT" config --get devroot.commitCloud || true)
+    [ -n "$repo" ] || repo="$(gh api user --jq .login)/commit-cloud"
+    say "clone    $repo -> .commit-cloud"
+    case "$repo" in
+      */*/* | *:* | /*) git clone --quiet --filter=blob:none "$repo" "$CC_DIR" 2> /dev/null ;;
+      *) gh repo clone "$repo" "$CC_DIR" -- --quiet --filter=blob:none > /dev/null 2>&1 ;;
+    esac || {
+      echo "commit-cloud: cannot clone $repo — create it private, never as a fork" >&2
+      exit 3
+    }
+  fi
+  if ! git -C "$CC_DIR" rev-parse --verify --quiet HEAD > /dev/null; then
+    say "init     README.md on main"
+    printf '%s\n' \
+      '# commit-cloud' \
+      '' \
+      'Private Sapling commit backups: the draft stacks from every machine. A store written and read only by [devroot](https://github.com/huntie/devroot), which backs up unpushed Sapling stacks here and restores them on the next machine.' \
+      '' \
+      'Inspired by Meta'\''s commit cloud, which open-source Sapling disables for git repos.' \
+      '' \
+      '## Layout' \
+      '' \
+      '```' \
+      'github.com/<owner>/<repo>/' \
+      '  <head>.bundle    The stack, as a git bundle: original commits, hashes, dates and branches' \
+      '  <head>.txt       Who backed it up, when, and the commits in it' \
+      '  <head>.hidden    Present once the stack was hidden or amended; the bundle stays' \
+      '```' \
+      '' \
+      'One bundle per draft head, keyed by the repo the checkout tracks. Nothing is ever deleted: a retracted stack gets a tombstone, and unhiding it on any machine revives it.' \
+      '' \
+      '## Use' \
+      '' \
+      '```' \
+      'dev commit-cloud backup     # back up this machine'\''s stacks, bring in the rest' \
+      'dev pull                    # restores on the way, beside your own stacks' \
+      '```' \
+      '' \
+      'Restored stacks show in `sl smartlog` with their branches and a `<host>/backup-<date>` bookmark. The commit history here is the log of who backed up what, and when.' \
+      '' \
+      'Private, and never a fork.' \
+      > "$CC_DIR/README.md"
+    git -C "$CC_DIR" symbolic-ref HEAD refs/heads/main
+    git -C "$CC_DIR" add README.md
+    git -C "$CC_DIR" commit --quiet --no-gpg-sign -m "Add README"
+    git -C "$CC_DIR" push --quiet -u origin main
+    return 0
+  fi
+  # Work an interrupted run left behind is committed first, so the pull can rebase.
+  commit_cc
+  if ! git -C "$CC_DIR" pull --quiet --rebase 2> /dev/null; then
+    echo "commit-cloud: cannot pull the commit-cloud repo — check the network, then rerun" >&2
+    exit 3
+  fi
+}
+
+# Push this checkout's changes, rebasing over other machines' pushes. Two
+# machines touch the same file only when both back up or retract the same
+# head at once.
+publish_cc() {
+  commit_cc
+  [ -n "$(git -C "$CC_DIR" rev-list '@{upstream}..HEAD')" ] || return 0
+  local attempt
+  for attempt in 1 2 3; do
+    if git -C "$CC_DIR" push --quiet 2> /dev/null; then
+      say "push     commit-cloud"
+      return 0
+    fi
+    git -C "$CC_DIR" pull --quiet --rebase 2> /dev/null || break
+  done
+  echo "commit-cloud: push to commit-cloud rejected — resolve in .commit-cloud and push by hand" >&2
+  NEEDS_HUMAN=1
+}
+
+# #endregion
+# #region each checkout
+
+is_sapling() { [ "$(git -C "$1" config --get devroot.vcs || true)" = sapling ]; }
+
+# The repo a checkout tracks, as host/owner/name: upstream for a fork, else
+# origin. Matches the same project across forks, protocols, and folder names.
+repo_key() {
+  local url
+  url=$(git -C "$1" remote get-url upstream 2> /dev/null || git -C "$1" remote get-url origin)
+  url="${url%.git}"
+  url="${url#*://}"
+  url="${url#*@}"
+  printf '%s' "${url/://}"
+}
+
+# Draft heads above the remote bookmarks: the stacks this checkout shows. In a
+# fork checkout, upstream commits the fork's main lacks are draft too, and
+# subtracting ::remotenames() keeps them out.
+local_heads() {
+  (cd "$1" && sl log -r 'heads(draft() - ::remotenames())' -T '{node}\n')
+}
+
+# The commits the remote bookmarks reach, as rev-list exclusions. This is the
+# measure local_heads uses; git's --remotes also covers sl pr submit's pr<N>
+# branches and its sapling-pr-archive branch, which sl still counts as draft.
+remote_base() {
+  local nodes
+  nodes=$(cd "$1" && sl log -r 'remotenames()' -T '{node}\n')
+  if [ -n "$nodes" ]; then
+    printf '%s\n' "$nodes"
+  else
+    printf '%s\n' --remotes
+  fi
+}
+
+has_commit() { git -C "$1" cat-file -e "$2^{commit}" 2> /dev/null; }
+
+# A head the repo holds and no machine has hidden.
+is_live() { [ -f "$CC_DIR/$1/$2.bundle" ] && [ ! -f "$CC_DIR/$1/$2.hidden" ]; }
+
+# A bare hash resolves even when hidden; the phase revset covers only what
+# smartlog shows.
+is_draft() {
+  [ -n "$(cd "$1" && sl log -r "$2 & draft()" -T x 2> /dev/null)" ]
+}
+
+# Backup bookmarks are this script's own: they never travel in a bundle, and
+# they go when the head they mark is forgotten.
+is_marker() {
+  case "$1" in */backup-[0-9]*) return 0 ;; esac
+  return 1
+}
+
+# Delete the bookmarks among the given branches that still sit on a head.
+drop_markers() {
+  local dir=$1 h=$2 b
+  shift 2
+  for b in "$@"; do
+    is_marker "$b" || continue
+    [ "$(git -C "$dir" rev-parse --verify --quiet "refs/heads/$b" || true)" = "$h" ] || continue
+    git -C "$dir" update-ref -d "refs/heads/$b" "$h"
+  done
+}
+
+# Branches at a head, bookmarks aside, as a space-separated line.
+branches_at() {
+  local b
+  for b in $(git -C "$1" for-each-ref --points-at "$2" --format='%(refname:short)' refs/heads); do
+    is_marker "$b" || printf '%s ' "$b"
+  done
+}
+
+# The synced-heads record: one line per head, followed by the branches placed
+# at it, which tells a later restore that it may move them.
+known_heads() { awk '{ print $1 }' "$1"; }
+
+record() {
+  local file=$1 h=$2
+  shift 2
+  printf '%s\n' "$h${*:+ $*}" >> "$file"
+}
+
+# Drop a head from the record, deleting the bookmarks placed on it.
+forget() {
+  local dir=$1 file=$2 h=$3 tmp
+  drop_markers "$dir" "$h" $(awk -v h="$h" '$1 == h { for (i = 2; i <= NF; i++) print $i }' "$file")
+  tmp=$(mktemp)
+  grep -v "^$h" "$file" > "$tmp" || true
+  mv "$tmp" "$file"
+}
+
+publish_stacks() {
+  local dir=$1 key=$2 known=$3 heads h refs tmp_ref
+  local base=()
+  heads=$(local_heads "$dir")
+  base=($(remote_base "$dir"))
+  mkdir -p "$CC_DIR/$key"
+  # Heads this checkout has not synced: new stacks, or stacks another machine
+  # backed up and this one already shows.
+  for h in $(grep -vxFf <(known_heads "$known") <<< "$heads" || true); do
+    if [ -f "$CC_DIR/$key/$h.bundle" ]; then
+      if [ -f "$CC_DIR/$key/$h.hidden" ]; then
+        rm -f "$CC_DIR/$key/$h.hidden"
+        say "revive   ${h:0:12} $(branches_at "$dir" "$h")"
+      fi
+      record "$known" "$h" $(branches_at "$dir" "$h")
+      continue
+    fi
+    # Every ref at the head goes in the bundle, so the restore side can name
+    # one to fetch and recreate the branches. Sapling writes
+    # refs/visibleheads/<head> only for a head no branch points at.
+    refs=$(git -C "$dir" for-each-ref --points-at "$h" --format='%(refname)' refs/heads "refs/visibleheads/$h" \
+      | grep -v '/backup-[0-9]' || true)
+    tmp_ref=
+    if [ -z "$refs" ]; then
+      tmp_ref="refs/visibleheads/$h"
+      git -C "$dir" update-ref "$tmp_ref" "$h"
+      refs=$tmp_ref
+    fi
+    if git -C "$dir" bundle create --quiet "$CC_DIR/$key/$h.bundle" $refs --not "${base[@]}" 2> /dev/null; then
+      {
+        printf 'from: %s\nbacked up: %s\n' "$producer" "$(date '+%Y-%m-%d %H:%M:%S %z')"
+        git -C "$dir" bundle list-heads "$CC_DIR/$key/$h.bundle"
+        echo
+        git -C "$dir" log --format='%H %ad %an%n    %s' --date=iso "$h" --not "${base[@]}"
+      } > "$CC_DIR/$key/$h.txt"
+      record "$known" "$h" $(branches_at "$dir" "$h")
+      say "back up  ${h:0:12} $(branches_at "$dir" "$h")"
+    else
+      rm -f "$CC_DIR/$key/$h.bundle"
+      echo "commit-cloud: cannot bundle ${h:0:12} in ${dir#$ROOT/}" >&2
+      NEEDS_HUMAN=1
+    fi
+    [ -z "$tmp_ref" ] || git -C "$dir" update-ref -d "$tmp_ref"
+  done
+  # Synced heads this checkout no longer shows as heads: hidden, amended,
+  # landed, or built on. A tombstone retracts them for every machine.
+  for h in $(known_heads "$known"); do
+    is_live "$key" "$h" || continue
+    grep -qx "$h" <<< "$heads" && continue
+    printf 'hidden by: %s\nat: %s\n' "$producer" "$(date '+%Y-%m-%d %H:%M:%S %z')" > "$CC_DIR/$key/$h.hidden"
+    forget "$dir" "$known" "$h"
+    say "retract  ${h:0:12}"
+  done
+  find "$CC_DIR" -mindepth 1 -type d -empty ! -path "$CC_DIR/.git*" -delete
+}
+
+# Fetch the commits a bundle is built on that this clone lacks, from upstream
+# and origin by hash.
+fetch_prerequisites() {
+  local dir=$1 bundle=$2 sha remote
+  for sha in $(LC_ALL=C sed -n '2,/^$/s/^-\([0-9a-f]\{40\}\).*/\1/p' "$bundle"); do
+    has_commit "$dir" "$sha" && continue
+    for remote in upstream origin; do
+      git -C "$dir" remote get-url "$remote" > /dev/null 2>&1 || continue
+      git -C "$dir" fetch --quiet --no-write-fetch-head "$remote" "$sha" 2> /dev/null && break
+    done
+  done
+}
+
+# Point a branch at a restored head unless it holds local work: the branch is
+# created when absent, moved when it still sits on a head this checkout synced
+# with that branch, and kept otherwise. Returns 1 when kept.
+place_branch() {
+  local dir=$1 b=$2 h=$3 known=$4 cur
+  cur=$(git -C "$dir" rev-parse --verify --quiet "refs/heads/$b" || true)
+  if [ -z "$cur" ]; then
+    git -C "$dir" update-ref "refs/heads/$b" "$h"
+    return 0
+  fi
+  [ "$cur" != "$h" ] || return 0
+  if [ "$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)" = "$b" ]; then
+    say "keep     $b (checked out; ${h:0:12} moves it elsewhere)"
+    return 1
+  fi
+  if awk -v h="$cur" -v b="$b" '$1 == h { for (i = 2; i <= NF; i++) if ($i == b) found = 1 } END { exit !found }' "$known"; then
+    git -C "$dir" update-ref "refs/heads/$b" "$h" "$cur"
+    return 0
+  fi
+  say "keep     $b (local work; ${h:0:12} arrives without it)"
+  return 1
+}
+
+RESTORED=()
+
+restore_stacks() {
+  local dir=$1 key=$2 known=$3 f h from ref b branches
+  RESTORED=()
+  [ -d "$CC_DIR/$key" ] || return 0
+  for f in "$CC_DIR/$key"/*.bundle; do
+    [ -e "$f" ] || continue
+    h=$(basename "$f" .bundle)
+    is_live "$key" "$h" || continue
+    grep -qx "$h" <<< "$(known_heads "$known")" && continue
+    from=$(sed -n 's/^from: //p' "${f%.bundle}.txt" 2> /dev/null | head -1)
+    ref=$(git -C "$dir" bundle list-heads "$f" | awk 'NR == 1 { print $2 }')
+    if ! has_commit "$dir" "$h"; then
+      fetch_prerequisites "$dir" "$f"
+      if ! git -C "$dir" fetch --quiet --no-write-fetch-head "$f" "+$ref:refs/visibleheads/$h" 2> /dev/null; then
+        echo "commit-cloud: cannot restore ${h:0:12} from ${from:-commit-cloud} — its base is on no remote here" >&2
+        NEEDS_HUMAN=1
+        continue
+      fi
+    fi
+    git -C "$dir" update-ref "refs/visibleheads/$h" "$h"
+    branches=
+    for ref in $(git -C "$dir" bundle list-heads "$f" | awk '$2 ~ /^refs\/heads\// { print $2 }'); do
+      b=${ref#refs/heads/}
+      if place_branch "$dir" "$b" "$h" "$known"; then
+        branches="$branches $b"
+      fi
+    done
+    record "$known" "$h" $branches
+    RESTORED+=("$h ${from%%/*}")
+    say "restore  ${h:0:12} from ${from:-commit-cloud}${branches:+ as$branches}"
+  done
+}
+
+# Bookmark each newly restored head as <host>/backup-<date>, the date being
+# its tip commit's, so an amended stack keeps its name; a second stack from the
+# same day and host takes -1, -2, and so on. Placed after the retractions, so
+# the name an old head held is free for its replacement. The bookmark is a
+# placed branch in the record, and leaves with the stack.
+place_markers() {
+  local dir=$1 known=$2 entry h host base name n tmp
+  for entry in ${RESTORED[@]+"${RESTORED[@]}"}; do
+    h=${entry%% *}
+    host=${entry#* }
+    [ -n "$host" ] || host=cloud
+    base="$host/backup-$(git -C "$dir" log -1 --format=%ad --date=format:%Y%m%d "$h")"
+    name=$base
+    n=0
+    while git -C "$dir" show-ref --verify --quiet "refs/heads/$name"; do
+      n=$((n + 1))
+      name="$base-$n"
+    done
+    git -C "$dir" update-ref "refs/heads/$name" "$h"
+    tmp=$(mktemp)
+    awk -v h="$h" -v m="$name" '$1 == h { print $0 " " m; next } { print }' "$known" > "$tmp"
+    mv "$tmp" "$known"
+    say "bookmark ${h:0:12} as $name"
+  done
+}
+
+# Hide synced stacks the repo no longer holds live. A stack stays, with its branches and
+# its record, while the working copy or a branch sits on it, so it is neither
+# hidden under the user nor backed up again as new. A stack whose commits
+# another head covers, because it landed or was built on, is only forgotten.
+# The pass repeats while it hides anything, since one stack can sit on another.
+hide_retracted() {
+  local dir=$1 key=$2 known=$3 kept backed_up h rest b cur stack nodes others hid=1
+  while [ "$hid" -eq 1 ]; do
+    hid=0
+    kept=$(mktemp)
+    backed_up=
+    while read -r h rest; do
+      [ -n "$h" ] || continue
+      if is_live "$key" "$h"; then
+        backed_up="$backed_up + $h"
+      fi
+    done < "$known"
+    while read -r h rest; do
+      [ -n "$h" ] || continue
+      if is_live "$key" "$h"; then
+        printf '%s\n' "$h${rest:+ $rest}" >> "$kept"
+        continue
+      fi
+      if ! is_draft "$dir" "$h"; then
+        drop_markers "$dir" "$h" $rest
+        continue
+      fi
+      stack="(draft() & ::$h) - ::((heads(draft()) - $h) $backed_up)"
+      nodes=$(cd "$dir" && sl log -r "$stack" -T '{node}\n')
+      if [ -z "$nodes" ]; then
+        drop_markers "$dir" "$h" $rest
+        continue
+      fi
+      if [ -n "$(cd "$dir" && sl log -r ". & ($stack)" -T x)" ]; then
+        say "keep     ${h:0:12} (retracted elsewhere, but checked out here)"
+        printf '%s\n' "$h${rest:+ $rest}" >> "$kept"
+        continue
+      fi
+      others=$(git -C "$dir" for-each-ref refs/heads --format='%(objectname) %(refname:short)' \
+        | grep -Ff <(printf '%s\n' "$nodes") | awk -v rest=" $rest " 'index(rest, " " $2 " ") == 0 { print $2 }' || true)
+      if [ -n "$others" ]; then
+        say "keep     ${h:0:12} (retracted elsewhere, but $(printf '%s' "$others" | head -1) sits on it)"
+        printf '%s\n' "$h${rest:+ $rest}" >> "$kept"
+        continue
+      fi
+      for b in $rest; do
+        cur=$(git -C "$dir" rev-parse --verify --quiet "refs/heads/$b" || true)
+        [ "$cur" = "$h" ] || continue
+        git -C "$dir" update-ref -d "refs/heads/$b" "$h"
+      done
+      (cd "$dir" && sl hide --quiet --config 'hint.ack=*' -r "$stack")
+      say "hide     ${h:0:12}${rest:+ $rest} (retracted elsewhere)"
+      hid=1
+    done < "$known"
+    mv "$kept" "$known"
+  done
+}
+
+# In restore mode, say when this checkout's stacks and the repo differ.
+report_pending() {
+  local dir=$1 key=$2 known=$3 new=0 dropped=0 heads h
+  heads=$(local_heads "$dir")
+  for h in $(grep -vxFf <(known_heads "$known") <<< "$heads" || true); do
+    is_live "$key" "$h" || new=$((new + 1))
+  done
+  for h in $(known_heads "$known"); do
+    is_live "$key" "$h" || continue
+    grep -qx "$h" <<< "$heads" || dropped=$((dropped + 1))
+  done
+  [ $((new + dropped)) -gt 0 ] || return 0
+  say "pending  backup is behind ($new new, $dropped dropped) — scripts/commit-cloud backup ${dir#$ROOT/}"
+}
+
+# #endregion
+
+if [ "$RESTORE_ONLY" -eq 1 ] && [ ! -d "$CC_DIR/.git" ]; then
+  exit 0
+fi
+
+dirs=()
+if [ $# -gt 0 ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      /*) dirs+=("${arg%/}") ;;
+      *) dirs+=("$ROOT/${arg%/}") ;;
+    esac
+  done
+else
+  for d in "$ROOT"/projects/*/; do
+    [ -d "$d.git" ] && dirs+=("${d%/}")
+  done
+fi
+
+checkouts=()
+for dir in ${dirs[@]+"${dirs[@]}"}; do
+  [ -d "$dir/.git" ] || {
+    echo "commit-cloud: ${dir#$ROOT/} is not a git checkout" >&2
+    exit 1
+  }
+  is_sapling "$dir" || {
+    [ $# -eq 0 ] && continue
+    echo "commit-cloud: ${dir#$ROOT/} is not a Sapling checkout (devroot.vcs=sapling) — commit cloud covers only those" >&2
+    exit 1
+  }
+  checkouts+=("$dir")
+done
+
+printf 'devroot: %s (%s)\n' "$ROOT" "$producer"
+ensure_cc
+
+for dir in ${checkouts[@]+"${checkouts[@]}"}; do
+  key=$(repo_key "$dir")
+  known="$(git -C "$dir" rev-parse --absolute-git-dir)/commit-cloud-heads"
+  touch "$known"
+  say "checkout ${dir#$ROOT/} ($key)"
+  [ "$RESTORE_ONLY" -eq 1 ] || publish_stacks "$dir" "$key" "$known"
+  restore_stacks "$dir" "$key" "$known"
+  hide_retracted "$dir" "$key" "$known"
+  place_markers "$dir" "$known"
+  [ "$RESTORE_ONLY" -eq 0 ] || report_pending "$dir" "$key" "$known"
+done
+[ "$RESTORE_ONLY" -eq 1 ] || publish_cc
+
+[ "$NEEDS_HUMAN" -eq 0 ] || exit 3
+say "ok       synced"

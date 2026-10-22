@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+#
+# Print the pull request a branch was submitted as, if any.
+#
+# A submitted branch has a PR opened from it, and its commit's message body
+# lives in that PR's description rather than in the commit. Skills that edit
+# commits check here first. The PR is looked up on the repository PRs open on:
+# upstream in the fork layout, else origin, with the head on origin. In a
+# checkout committed to with Sapling (git config devroot.vcs=sapling), the PR is
+# the one sl pr submit linked to the commit, since it pushes each PR from a
+# branch of its own.
+#
+# Exit codes: 0 answered (submitted or not), 1 error, 2 usage.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+
+usage() {
+  printf '%s\n' \
+    'Usage: scripts/pr-info [<checkout>] [--branch <name> | --rev <rev>] [--json]' \
+    '' \
+    'Prints the pull request the branch was submitted as: number, state, draft or' \
+    'ready, whether the local branch matches the PR head, and the URL. Prints' \
+    'nothing (or null with --json) when the branch has no PR. The most recent PR' \
+    'wins when there are several, closed and merged ones included.' \
+    '' \
+    '  <checkout>   Path to the checkout, relative to the root or absolute.' \
+    '               Defaults to the checkout containing the current directory.' \
+    '  --branch     The branch to look up. Defaults to the checked-out branch.' \
+    '  --rev        Sapling checkouts: the commit to look up, as an sl revset.' \
+    '               Defaults to the working copy parent (.).' \
+    '  --json       Print {number, url, state, isDraft, title, repo, head, local,' \
+    '               inSync} instead.' \
+    '' \
+    'inSync is false when the local branch has commits or rewrites the PR does not,' \
+    'which a resubmit sends.' \
+    '' \
+    'Exits 0 answered, 1 error, 2 usage.'
+}
+
+dir_arg=""
+branch=""
+rev=""
+json=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --json) json=1 ;;
+    --branch)
+      [ $# -ge 2 ] || {
+        echo "pr-info: --branch needs a name" >&2
+        exit 2
+      }
+      branch="$2"
+      shift
+      ;;
+    --rev)
+      [ $# -ge 2 ] || {
+        echo "pr-info: --rev needs a revset" >&2
+        exit 2
+      }
+      rev="$2"
+      shift
+      ;;
+    -*)
+      echo "pr-info: unknown option '$1'" >&2
+      exit 2
+      ;;
+    *)
+      [ -z "$dir_arg" ] || {
+        echo "pr-info: expected at most one checkout" >&2
+        exit 2
+      }
+      dir_arg="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -n "$dir_arg" ]; then
+  case "$dir_arg" in
+    /*) dir="${dir_arg%/}" ;;
+    *) dir="$ROOT/${dir_arg%/}" ;;
+  esac
+else
+  dir=$(git rev-parse --show-toplevel 2> /dev/null || true)
+  [ -n "$dir" ] || {
+    echo "pr-info: run inside a checkout, or pass its path" >&2
+    exit 2
+  }
+fi
+git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 || {
+  echo "pr-info: $dir is not a git checkout" >&2
+  exit 1
+}
+
+command -v gh > /dev/null || {
+  echo "pr-info: needs the GitHub CLI (gh)" >&2
+  exit 1
+}
+
+sapling=0
+if [ "$(git -C "$dir" config --get devroot.vcs || true)" = "sapling" ] && [ -z "$branch" ]; then
+  sapling=1
+elif [ -n "$rev" ]; then
+  echo "pr-info: --rev is for Sapling checkouts (devroot.vcs=sapling)" >&2
+  exit 2
+fi
+
+if [ "$sapling" -eq 1 ]; then
+  command -v sl > /dev/null || {
+    echo "pr-info: $dir is a Sapling checkout, and sl is not installed" >&2
+    exit 1
+  }
+  # From inside the checkout: see ensure_sl_config in scripts/checkout. Only a
+  # draft commit counts: sl also links public commits to the PR that landed them.
+  number=$(cd "$dir" && sl log -r "draft() & (${rev:-.})" -T '{github_pull_request_number}')
+  local_sha=$(cd "$dir" && sl log -r "${rev:-.}" -T '{node}')
+elif [ -z "$branch" ]; then
+  branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)
+  [ -n "$branch" ] || {
+    echo "pr-info: HEAD is detached; pass --branch" >&2
+    exit 2
+  }
+fi
+if [ "$sapling" -eq 0 ]; then
+  local_sha=$(git -C "$dir" rev-parse --verify --quiet "refs/heads/$branch" || true)
+  [ -n "$local_sha" ] || {
+    echo "pr-info: no local branch '$branch'" >&2
+    exit 1
+  }
+fi
+
+# owner/repo of a remote, or empty when it is missing or not on GitHub.
+github_repo() {
+  local url
+  url=$(git -C "$dir" remote get-url "$1" 2> /dev/null || true)
+  printf '%s' "$url" |
+    sed -nE 's#^(git@github\.com:|https://github\.com/|ssh://git@github\.com/)([^/]+/[^/]+)$#\2#p' |
+    sed -E 's#\.git$##'
+}
+
+head_repo=$(github_repo origin)
+[ -n "$head_repo" ] || {
+  echo "pr-info: origin is not a GitHub remote" >&2
+  exit 1
+}
+pr_repo=$(github_repo upstream)
+[ -n "$pr_repo" ] || pr_repo="$head_repo"
+head_owner="${head_repo%%/*}"
+
+record="{number, url, state, isDraft, title, repo: \"$pr_repo\",
+  head: .headRefOid, local: \"$local_sha\", inSync: (.headRefOid == \"$local_sha\")}"
+line="\"#\\(.number) \\(.state) \\(if .isDraft then \"draft\" else \"ready\" end) \\(if .headRefOid == \"$local_sha\" then \"in-sync\" else \"unsent\" end) \\(.url)\""
+if [ "$json" -eq 1 ]; then
+  format="if . == null then \"null\" else $record end"
+else
+  format="if . == null then empty else $line end"
+fi
+
+if [ "$sapling" -eq 1 ]; then
+  if [ -z "$number" ]; then
+    [ "$json" -eq 0 ] || echo null
+    exit 0
+  fi
+  gh pr view "$number" --repo "$pr_repo" --json number,url,state,isDraft,title,headRefOid \
+    --jq "$format"
+  exit 0
+fi
+
+gh pr list --repo "$pr_repo" --head "$branch" --state all --limit 20 \
+  --json number,url,state,isDraft,title,headRefOid,headRepositoryOwner,createdAt \
+  --jq "[.[] | select(.headRepositoryOwner.login == \"$head_owner\")] | sort_by(.createdAt) | last | $format"

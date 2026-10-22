@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+#
+# Regenerate devroot.code-workspace from what is on disk.
+#
+# Covers devroot, dotfiles, and every checkout under projects/. Paths stay
+# relative so the file works on any machine.
+#
+# Convergent; the file is generated and gitignored, never edited by hand.
+#
+# Exit codes: 0 converged, 1 error, 2 usage.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+WORKSPACE="$ROOT/devroot.code-workspace"
+
+# Every checkout in the workspace, as a path relative to the root.
+#
+# Order is dotfiles first, then checkouts alphabetically. Sorting happens
+# after the trailing slash is stripped: glob order sorts
+# "react-native-website/" before "react-native/", because "-" precedes "/" in
+# byte order. LC_ALL=C keeps the result identical on every machine.
+checkouts() {
+  if [ -d "$ROOT/dotfiles" ]; then
+    printf 'dotfiles\n'
+  fi
+
+  local dir nested
+  for dir in "$ROOT"/projects/*/; do
+    # $dir keeps its trailing slash so $dir.git is path/.git, not path.git.
+    if [ -d "$dir.git" ]; then
+      dir="${dir%/}"
+      printf '%s\n' "${dir#$ROOT/}"
+      continue
+    fi
+    # gclient workspaces nest the git checkout one level down, beside
+    # gclient's bookkeeping.
+    dir="${dir%/}"
+    for nested in "$dir"/*/; do
+      [ -d "$nested.git" ] || continue
+      nested="${nested%/}"
+      printf '%s\n' "${nested#$ROOT/}"
+    done
+  done | LC_ALL=C sort
+}
+
+case "${1:-}" in
+  '') ;;
+  -h | --help)
+    printf '%s\n' \
+      'Usage: scripts/sync-workspace' \
+      '' \
+      'Regenerates devroot.code-workspace from the checkouts on disk.' \
+      '' \
+      'Exits 0 converged, 1 error, 2 usage.'
+    exit 0
+    ;;
+  *)
+    echo "sync-workspace: unknown option '$1'" >&2
+    exit 2
+    ;;
+esac
+
+say() { printf '  %s\n' "$*"; }
+
+printf 'devroot: %s\n' "$ROOT"
+
+generated=$(
+  printf '{\n  "folders": [\n    { "name": "devroot", "path": "." }'
+  while read -r path; do
+    printf ',\n    { "name": "%s", "path": "%s" }' "${path##*/}" "$path"
+  done < <(checkouts)
+  printf '\n  ],\n  "settings": {\n'
+  printf '    "git.repositoryScanMaxDepth": 2,\n'
+  printf '    "terminal.integrated.cwd": "${workspaceFolder:devroot}",\n'
+  printf '    "files.exclude": { "projects": true, "tools": true, "scratch": true, "dotfiles": true, "vault": false }\n'
+  printf '  }\n}'
+)
+
+if [ -f "$WORKSPACE" ] && [ "$generated" = "$(cat "$WORKSPACE")" ]; then
+  say "ok       devroot.code-workspace"
+else
+  say "write    devroot.code-workspace"
+  printf '%s\n' "$generated" > "$WORKSPACE"
+fi

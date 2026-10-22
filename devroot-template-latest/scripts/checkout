@@ -1,0 +1,456 @@
+#!/usr/bin/env bash
+#
+# Clone into projects/ with the fork layout (origin=fork, upstream=canonical).
+#
+# Ensure a checkout exists in projects/ — cloning only if missing — and
+# optionally land it on a ref (flags are documented in --help):
+#
+#   scripts/checkout react/react-native              clone if missing, configure
+#   scripts/checkout react/react-native#12345        …then check out PR 12345
+#   scripts/checkout react/react-native@0.76-stable  …then check out the branch
+#   scripts/checkout react/react-native@fix-flake --new  …start a task branch
+#   scripts/checkout someorg/private-repo            cloned directly (no fork)
+#
+# Two git config keys shape a checkout, and are usually set per org by a
+# conditional include in the user's gitconfig: devroot.vcs=sapling marks it as
+# committed to with sl, and devroot.branchPrefix sets the prefix new branches
+# take.
+#
+# Idempotent: an existing checkout is configured, not re-cloned, and is found
+# by its remotes whatever its folder is named. Before any branch change,
+# uncommitted work is parked as a "WIP <date>" commit, so nothing is lost or
+# dragged across.
+#
+# A private repo or your own repo clones directly (origin is the named repo; a
+# fork's parent becomes upstream), and branch lookup prefers origin over
+# upstream. Prefers gh, which forks and sets both remotes in one step; plain
+# git otherwise.
+#
+# Exit codes: 0 ready, 1 error, 2 usage; 3 means something needs a human.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+
+UPSTREAM=""
+NAME=""
+SPEC=""
+TARGET_DIR="projects"
+NO_FORK=0
+NEW=0
+SAPLING=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --upstream)
+      shift
+      [ $# -gt 0 ] || {
+        echo "checkout: --upstream needs <owner/repo>" >&2
+        exit 2
+      }
+      UPSTREAM="$1"
+      ;;
+    --name)
+      shift
+      [ $# -gt 0 ] || {
+        echo "checkout: --name needs a directory name" >&2
+        exit 2
+      }
+      NAME="$1"
+      ;;
+    --target-dir)
+      shift
+      [ $# -gt 0 ] || {
+        echo "checkout: --target-dir needs a directory" >&2
+        exit 2
+      }
+      TARGET_DIR="${1%/}"
+      ;;
+    --no-fork)
+      NO_FORK=1
+      ;;
+    --new)
+      NEW=1
+      ;;
+    --sapling)
+      SAPLING=1
+      ;;
+    -h | --help)
+      printf '%s\n' \
+        'Usage: scripts/checkout <owner/repo>[#pr|@branch] [--new] [--sapling] [--target-dir <dir>] [--no-fork] [--upstream <owner/repo>] [--name <dir>]' \
+        '' \
+        'Ensures projects/<repo> exists with origin as your fork and upstream as the' \
+        'canonical repo, cloning only if missing. With gh available this forks first' \
+        'when the repo is not yours, and sets the git config gh stack needs. A #pr or' \
+        '@branch suffix then checks out that ref, parking any uncommitted work first as' \
+        'a "WIP <date>" commit; a PR inside a stack comes down with its stack.' \
+        '' \
+        '  --new         With @branch: create it from the local default branch,' \
+        '                which scripts/pull has just synced.' \
+        '                Errors if the branch exists anywhere. On a shared repo the' \
+        '                name gets the branch prefix: git config devroot.branchPrefix,' \
+        '                else <you>/.' \
+        '  --sapling     Commit to this checkout with sl, as git config' \
+        '                devroot.vcs=sapling does: sets it in the checkout'\''s local' \
+        '                config, so it sticks on this machine.' \
+        '  --target-dir  Parent directory under the root (default: projects). Use' \
+        '                --target-dir scratch for a throwaway checkout.' \
+        '  --no-fork     Clone the named repo directly as origin, without forking.' \
+        '                Private repos and your own repos do this automatically.' \
+        '  --upstream    Set the upstream remote explicitly. Only needed without gh,' \
+        '                which infers it from the fork parent.' \
+        '  --name        Directory name for the checkout, if it should differ from the' \
+        '                repo. Only needed on the first clone; later runs find the' \
+        '                checkout by its remotes.' \
+        '' \
+        'When git config has devroot.vcs=sapling, the checkout is committed to with sl' \
+        'in its .git mode, and this sets the sl config for stacked GitHub PRs.'
+      exit 0
+      ;;
+    -*)
+      echo "checkout: unknown option '$1'" >&2
+      exit 2
+      ;;
+    *)
+      [ -z "$SPEC" ] || {
+        echo "checkout: expected one repo, got '$SPEC' and '$1'" >&2
+        exit 2
+      }
+      SPEC="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$SPEC" ]; then
+  echo "checkout: expected <owner/repo>[#pr|@branch]" >&2
+  exit 2
+fi
+if [ "$NEW" -eq 1 ] && [ "${SPEC#*@}" = "$SPEC" ]; then
+  echo "checkout: --new needs an @branch to create" >&2
+  exit 2
+fi
+
+TARGET_REPO="$SPEC"
+PR=""
+BRANCH=""
+case "$SPEC" in
+  *'#'*)
+    TARGET_REPO="${SPEC%%#*}"
+    PR="${SPEC#*#}"
+    case "$PR" in
+      '' | *[!0-9]*)
+        echo "checkout: expected a PR number after '#', got '$PR'" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  *@*)
+    TARGET_REPO="${SPEC%%@*}"
+    BRANCH="${SPEC#*@}"
+    [ -n "$BRANCH" ] || {
+      echo "checkout: expected a branch after '@'" >&2
+      exit 2
+    }
+    ;;
+esac
+case "$TARGET_REPO" in
+  */*) ;;
+  *)
+    echo "checkout: expected <owner/repo>, got '$TARGET_REPO'" >&2
+    exit 2
+    ;;
+esac
+
+case "$TARGET_DIR" in
+  '' | /* | ..* | */..*)
+    echo "checkout: --target-dir expects a directory relative to the root, got '$TARGET_DIR'" >&2
+    exit 2
+    ;;
+esac
+
+owner="${TARGET_REPO%%/*}"
+repo="${TARGET_REPO##*/}"
+name="${NAME:-$repo}"
+dir="$ROOT/$TARGET_DIR/$name"
+
+say() { printf '  %s\n' "$*"; }
+
+have_gh() { command -v gh > /dev/null && gh auth status > /dev/null 2>&1; }
+
+# Find an existing checkout of $TARGET_REPO under the target dir by its
+# remotes, so a checkout under a different folder name (--name) is still found
+# rather than re-cloned. The remotes are the identity; no manifest records the
+# mapping.
+find_existing() {
+  local d url r
+  for d in "$ROOT/$TARGET_DIR"/*/; do
+    d="${d%/}"
+    [ -d "$d/.git" ] || continue
+    for r in origin upstream; do
+      url=$(git -C "$d" remote get-url "$r" 2> /dev/null) || continue
+      case "$url" in
+        *[:/]"$TARGET_REPO".git | *[:/]"$TARGET_REPO")
+          printf '%s\n' "$d"
+          return 0
+          ;;
+      esac
+    done
+  done
+  return 1
+}
+
+# Set upstream unless it is already there. `gh repo clone` sets it for a fork
+# on its own.
+ensure_upstream() {
+  local target="$1"
+  [ -n "$target" ] || return 0
+  if git -C "$dir" remote get-url upstream > /dev/null 2>&1; then
+    say "remote   upstream=$(git -C "$dir" remote get-url upstream) (already set)"
+  else
+    say "remote   upstream=$target"
+    git -C "$dir" remote add upstream "git@github.com:$target.git"
+  fi
+}
+
+# Park uncommitted work — staged, unstaged, and untracked — as a WIP commit on
+# the current branch, so a branch change can never lose or drag it along.
+# --no-verify because a parking commit must not be blocked by hooks.
+park_wip() {
+  [ -n "$(git -C "$dir" status --porcelain)" ] || return 0
+  local branch
+  branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)
+  local msg
+  msg="WIP $(date '+%Y-%m-%d %H:%M')"
+  if [ -z "$branch" ] && [ "$(git -C "$dir" config --get devroot.vcs || true)" = "sapling" ]; then
+    # Sapling keeps a detached draft commit visible under refs/visibleheads.
+    say "park     uncommitted work on the detached stack as \"$msg\""
+    (cd "$dir" && sl commit --addremove --quiet -m "$msg")
+    return 0
+  fi
+  if [ -z "$branch" ]; then
+    echo "checkout: uncommitted work on a detached HEAD — commit or stash it by hand first" >&2
+    exit 3
+  fi
+  git -C "$dir" add -A
+  # After an sl amend, git's index can lag HEAD and report changes that the
+  # commit already holds; once staged, they are nothing to park.
+  git -C "$dir" diff --cached --quiet && return 0
+  say "park     uncommitted work on $branch as \"$msg\""
+  git -C "$dir" commit --quiet --no-verify -m "$msg"
+}
+
+# #region ensure the clone
+
+printf 'devroot: %s\n' "$ROOT"
+
+if [ -e "$dir" ]; then
+  [ -d "$dir/.git" ] || {
+    echo "checkout: $TARGET_DIR/$name exists but is not a git checkout" >&2
+    exit 1
+  }
+  say "exists   $TARGET_DIR/$name"
+elif existing=$(find_existing); then
+  dir="$existing"
+  name="${dir##*/}"
+  say "exists   $TARGET_DIR/$name (matched $TARGET_REPO by remote)"
+else
+  mkdir -p "$ROOT/$TARGET_DIR"
+  if have_gh; then
+    me=$(gh api user --jq .login)
+    why=""
+    if [ "$owner" = "$me" ]; then
+      why="already yours"
+    elif [ "$NO_FORK" -eq 1 ]; then
+      why="--no-fork"
+    elif [ "$(gh repo view "$TARGET_REPO" --json isPrivate --jq .isPrivate 2> /dev/null || echo false)" = "true" ]; then
+      why="private; no fork"
+    fi
+    if [ -n "$why" ]; then
+      # Direct clone, nothing to fork — but if the repo is itself a fork,
+      # adopt its parent as upstream so the layout matches a repo cloned the
+      # canonical way.
+      parent=$(gh repo view "$TARGET_REPO" --json parent \
+        --jq '.parent | if . then .owner.login + "/" + .name else empty end' 2> /dev/null || true)
+      say "clone    $TARGET_REPO -> $TARGET_DIR/$name ($why)"
+      (cd "$ROOT/$TARGET_DIR" && gh repo clone "$TARGET_REPO" "$name")
+      ensure_upstream "${parent:-$UPSTREAM}"
+    else
+      # Sets origin to your fork and upstream to the parent, forking first if
+      # needed.
+      say "fork     $TARGET_REPO -> $TARGET_DIR/$name (origin=$me/$repo, upstream=$TARGET_REPO)"
+      (cd "$ROOT/$TARGET_DIR" && gh repo fork "$TARGET_REPO" --clone --fork-name "$repo" > /dev/null)
+      # gh clones under the repo name — or an existing fork's own name, which
+      # can differ — so locate the fresh clone by remote and move it to the
+      # requested name.
+      if [ ! -d "$dir" ]; then
+        cloned=$(find_existing || true)
+        if [ -n "$cloned" ] && [ "$cloned" != "$dir" ]; then
+          say "move     ${cloned#$ROOT/} -> $TARGET_DIR/$name"
+          mv "$cloned" "$dir"
+        fi
+      fi
+      ensure_upstream "$TARGET_REPO"
+    fi
+  else
+    say "clone    $TARGET_REPO -> $TARGET_DIR/$name (no gh; plain git)"
+    git clone "git@github.com:$TARGET_REPO.git" "$dir"
+    if [ -n "$UPSTREAM" ]; then
+      ensure_upstream "$UPSTREAM"
+    else
+      say "note     no upstream remote set; pass --upstream <owner/repo> if this is a fork"
+    fi
+  fi
+  [ -d "$dir/.git" ] || {
+    echo "checkout: $dir is not a checkout after cloning" >&2
+    exit 1
+  }
+  say "remotes  $(git -C "$dir" remote | tr '\n' ' ')"
+fi
+
+# gh stack needs a push default with two remotes, and rerere for stacked rebases.
+ensure_config() {
+  local key=$1 want=$2 have
+  have=$(git -C "$dir" config --get "$key" || true)
+  if [ "$have" = "$want" ]; then
+    say "ok       $key=$want"
+  else
+    say "config   $key=$want"
+    git -C "$dir" config "$key" "$want"
+  fi
+}
+ensure_config remote.pushDefault origin
+ensure_config rerere.enabled true
+
+# The prefix a new branch takes: devroot.branchPrefix when set, else <you>/ on
+# a shared repo, where origin is canonical and not the user's. Empty on a fork.
+branch_prefix() {
+  local prefix
+  prefix=$(git -C "$dir" config --get devroot.branchPrefix || true)
+  if [ -z "$prefix" ] && have_gh && ! git -C "$dir" remote get-url upstream > /dev/null 2>&1; then
+    local me
+    me=$(gh api user --jq .login)
+    case "$(git -C "$dir" remote get-url origin)" in
+      *[:/]"$me"/*) ;;
+      *) prefix="$me/" ;;
+    esac
+  fi
+  printf '%s' "$prefix"
+}
+
+# sl runs from inside the checkout: when it refreshes its copy of the git
+# config, it reads the config of the working directory, not of -R or --cwd.
+ensure_sl_config() {
+  local key=$1 want=$2 have
+  have=$(cd "$dir" && sl config "$key" 2> /dev/null || true)
+  if [ "$have" = "$want" ]; then
+    say "ok       sl $key=$want"
+  else
+    say "config   sl $key=$want"
+    (cd "$dir" && sl config --local "$key" "$want" > /dev/null)
+  fi
+}
+if [ "$SAPLING" -eq 1 ] && [ "$(git -C "$dir" config --get devroot.vcs || true)" != "sapling" ]; then
+  say "config   devroot.vcs=sapling"
+  git -C "$dir" config devroot.vcs sapling
+fi
+if [ "$(git -C "$dir" config --get devroot.vcs || true)" = "sapling" ]; then
+  if command -v sl > /dev/null; then
+    # One PR per commit, each based on the PR below, as gh stack lays them
+    # out, and pushed from a plain pr<number> branch. After the first submit
+    # the PR description is the source of truth.
+    ensure_sl_config github.preferred_submit_command pr
+    ensure_sl_config github.pr-workflow single
+    ensure_sl_config github.preserve-pull-request-description true
+    ensure_sl_config github.pull-request-include-reviewstack false
+    ensure_sl_config github.pr.branch-name-template 'pr{github_pull_request_number}'
+  else
+    say "note     devroot.vcs=sapling, but sl is not installed"
+    SL_MISSING=1
+  fi
+fi
+
+# #endregion
+# #region land on the ref
+
+if [ -n "$PR" ]; then
+  have_gh || {
+    echo "checkout: checking out a PR needs gh, which is absent or unauthenticated" >&2
+    exit 1
+  }
+  park_wip
+  # By URL: gh stack reads a bare number as a stack number first.
+  if gh extension list 2> /dev/null | grep -q 'github/gh-stack' \
+    && (cd "$dir" && gh stack checkout "https://github.com/$TARGET_REPO/pull/$PR" < /dev/null > /dev/null 2>&1); then
+    say "stack    PR #$PR checked out with its stack"
+  else
+    say "pr       #$PR"
+    (cd "$dir" && gh pr checkout "$PR")
+  fi
+elif [ -n "$BRANCH" ] && [ "$NEW" -eq 1 ]; then
+  if [ -n "$(git -C "$dir" branch --all --list "$BRANCH" "*/$BRANCH")" ]; then
+    echo "checkout: branch '$BRANCH' already exists — drop --new to land on it" >&2
+    exit 1
+  fi
+  prefix=$(branch_prefix)
+  case "$BRANCH" in
+    "$prefix"*) ;;
+    *)
+      say "prefix   $prefix"
+      BRANCH="$prefix$BRANCH"
+      ;;
+  esac
+  park_wip
+  # From the local default branch, whatever is checked out: scripts/pull
+  # returns to where it started after syncing that branch.
+  base_remote=origin
+  git -C "$dir" remote get-url upstream > /dev/null 2>&1 && base_remote=upstream
+  base=$(git -C "$dir" symbolic-ref --quiet --short "refs/remotes/$base_remote/HEAD" 2> /dev/null || true)
+  base="${base#"$base_remote/"}"
+  if [ -z "$base" ] || ! git -C "$dir" show-ref --verify --quiet "refs/heads/$base"; then
+    base=$(git -C "$dir" symbolic-ref --quiet --short HEAD)
+  fi
+  say "branch   $BRANCH (new, from $base)"
+  git -C "$dir" checkout --quiet -b "$BRANCH" "$base"
+elif [ -n "$BRANCH" ]; then
+  current=$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)
+  if [ "$current" = "$BRANCH" ]; then
+    say "ok       already on $BRANCH"
+  elif git -C "$dir" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    park_wip
+    say "branch   $BRANCH"
+    git -C "$dir" checkout --quiet "$BRANCH"
+  else
+    # The fork is preferred: a named branch is usually your own work on
+    # origin. The second remote is only fetched when the first lacks the
+    # branch.
+    remotes="origin"
+    if git -C "$dir" remote get-url upstream > /dev/null 2>&1; then
+      remotes="origin upstream"
+    fi
+    found=""
+    for r in $remotes; do
+      say "fetch    $r"
+      git -C "$dir" fetch --quiet "$r"
+      if git -C "$dir" show-ref --verify --quiet "refs/remotes/$r/$BRANCH"; then
+        found="$r"
+        break
+      fi
+    done
+    if [ -z "$found" ]; then
+      echo "checkout: no branch '$BRANCH' locally or on: $remotes — add --new to start it from the default branch" >&2
+      exit 1
+    fi
+    park_wip
+    say "branch   $BRANCH (tracking $found/$BRANCH)"
+    git -C "$dir" checkout --quiet -b "$BRANCH" --track "$found/$BRANCH"
+  fi
+fi
+
+# #endregion
+
+# Regenerate the workspace file so it includes this checkout.
+printf '\n'
+"$ROOT/scripts/sync-workspace"
+
+[ "${SL_MISSING:-0}" -eq 0 ] || exit 3

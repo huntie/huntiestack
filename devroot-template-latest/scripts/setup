@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+#
+# Ensure the core checkouts, then hand off to sync-workspace.
+#
+# Machine and environment setup, ensure-plus-delegate style: running it again
+# at any time is harmless.
+#
+# Two core checkouts sit beside the workspace's own files, both gitignored,
+# and both come from a GitHub user: <owner>/dotfiles and <owner>/vault, named
+# with --user <owner>. Both are attempts: a clone that fails is a note and
+# exit 3, never an error. A repo is named outright with --dotfiles-repo or
+# --vault-repo, skipped with --no-dotfiles or --no-vault, or both are skipped
+# with --bare; --user is needed only for a checkout those leave. Nothing is
+# persisted: once cloned, the checkouts on disk are the record, and later
+# runs report them as ok.
+#
+#   dotfiles/   The public dotfiles repo, which makes the personal-conventions
+#               import in AGENTS.md resolve (dotfiles/claude/.claude/CLAUDE.md).
+#               Anonymous https is enough on a cloud environment.
+#   vault/      The private vault of plans and working knowledge. Needs an
+#               authenticated gh, or credentials git can use on its own; where
+#               neither exists it is skipped with a note. A user who keeps the
+#               vault outside git, in a synced folder or a notes app, passes
+#               only --dotfiles-repo; the git-backed vault repo is one way to
+#               carry it, the way this workspace's own setup does.
+#
+# Exit codes: 0 ready, 1 error, 2 usage; 3 means something needs a human.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+
+USER_OWNER=""
+DOTFILES_REPO=""
+VAULT_REPO=""
+DOTFILES=1
+VAULT=1
+DOTFILES_SKIP=""
+VAULT_SKIP=""
+NEEDS_HUMAN=0
+INSTALL_DEV=ask
+
+usage() {
+  printf '%s\n' \
+    'Usage: scripts/setup --user <owner> [--dotfiles-repo <owner/repo>] [--vault-repo <owner/repo>] [--no-dotfiles] [--no-vault] [-y | --shell-install | --no-shell-install]' \
+    '       scripts/setup --bare [-y | --shell-install | --no-shell-install]' \
+    '' \
+    'Ensures the core checkouts, dotfiles and vault, exist beside this workspace,' \
+    'then runs sync-workspace. Safe to run again at any time.' \
+    '' \
+    '  --user           GitHub user or org whose dotfiles and vault repos to bring' \
+    '                   in: <owner>/dotfiles and <owner>/vault. Needed unless both' \
+    '                   are named outright or skipped.' \
+    '  --dotfiles-repo  Dotfiles repo to clone; overrides --user.' \
+    '  --vault-repo     Vault repo to clone; overrides --user. Private, so it' \
+    '                   is skipped with a note where nothing can authenticate.' \
+    '  --no-dotfiles    Skip the dotfiles checkout.' \
+    '  --no-vault       Skip the vault checkout, for a vault managed outside git.' \
+    '  --bare           Skip both: the workspace only.' \
+    '  -y, --shell-install  Install the dev command into the home directory' \
+    '                   without asking, as an unattended run in a terminal needs.' \
+    '  --no-shell-install  Do not install the dev command.' \
+    '                   Asked about otherwise, and skipped without a terminal.' \
+    '' \
+    'Exits 0 ready, 1 error, 2 usage; 3 when a checkout was skipped or needs a human.'
+}
+
+repo_arg() {
+  # $1 is the flag, $2 its value: must be owner/repo.
+  case "${2:-}" in
+    */*) ;;
+    *)
+      echo "setup: $1 needs <owner/repo>" >&2
+      exit 2
+      ;;
+  esac
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --user)
+      case "${2:-}" in
+        '' | */* | -*)
+          echo "setup: --user needs a GitHub user or org" >&2
+          exit 2
+          ;;
+      esac
+      USER_OWNER="$2"
+      shift
+      ;;
+    --dotfiles-repo)
+      repo_arg "$1" "${2:-}"
+      DOTFILES_REPO="$2"
+      shift
+      ;;
+    --vault-repo)
+      repo_arg "$1" "${2:-}"
+      VAULT_REPO="$2"
+      shift
+      ;;
+    --no-dotfiles)
+      DOTFILES=0
+      DOTFILES_SKIP="$1"
+      ;;
+    --no-vault)
+      VAULT=0
+      VAULT_SKIP="$1"
+      ;;
+    --bare)
+      DOTFILES=0
+      VAULT=0
+      DOTFILES_SKIP="$1"
+      VAULT_SKIP="$1"
+      ;;
+    -y | --shell-install)
+      INSTALL_DEV=yes
+      ;;
+    --no-shell-install)
+      INSTALL_DEV=no
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "setup: unknown option '$1'" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+say() { printf '  %s\n' "$*"; }
+
+if [ -z "$USER_OWNER" ] && { { [ "$DOTFILES" -eq 1 ] && [ -z "$DOTFILES_REPO" ]; } || { [ "$VAULT" -eq 1 ] && [ -z "$VAULT_REPO" ]; }; }; then
+  echo "setup: --user <owner> names whose dotfiles and vault to bring in; --bare skips both" >&2
+  exit 2
+fi
+
+: "${DOTFILES_REPO:=$USER_OWNER/dotfiles}"
+: "${VAULT_REPO:=$USER_OWNER/vault}"
+
+# ensure_checkout <owner/repo> <dir>
+#
+# Clones when <dir> is absent. gh clones over the user's preferred protocol,
+# so pushes work on a personal machine; the fallback is https with prompts
+# disabled, enough for a public repo or for credentials git already holds.
+# A failure on either path is a note rather than an error, since both
+# checkouts are optional.
+ensure_checkout() {
+  local repo=$1 dir=$2 path="$ROOT/$2"
+  if [ -d "$path/.git" ]; then
+    say "ok       $dir"
+  elif [ -e "$path" ]; then
+    say "note     $dir exists and is not a checkout — leaving it"
+    NEEDS_HUMAN=1
+  elif command -v gh > /dev/null && gh auth status > /dev/null 2>&1; then
+    say "clone    $repo -> $dir"
+    if ! gh repo clone "$repo" "$path" > /dev/null 2>&1; then
+      hint="check the name and your access"
+      [ "$dir" = vault ] && hint="$hint, or /setup-vault to start one"
+      say "skip     $dir ($repo could not be cloned — $hint)"
+      NEEDS_HUMAN=1
+    fi
+  else
+    say "clone    $repo -> $dir (https)"
+    if ! GIT_TERMINAL_PROMPT=0 git clone --quiet "https://github.com/$repo.git" "$path" 2> /dev/null; then
+      hint="run gh auth login and rerun"
+      [ "$dir" = vault ] && hint="$hint, or /setup-vault to start one"
+      say "skip     $dir ($repo needs auth here — $hint)"
+      NEEDS_HUMAN=1
+    fi
+  fi
+}
+
+printf 'devroot: %s\n' "$ROOT"
+
+if [ "$DOTFILES" -eq 1 ]; then
+  ensure_checkout "$DOTFILES_REPO" dotfiles
+else
+  say "skip     dotfiles ($DOTFILES_SKIP)"
+fi
+if [ "$VAULT" -eq 1 ]; then
+  ensure_checkout "$VAULT_REPO" vault
+else
+  say "skip     vault ($VAULT_SKIP)"
+fi
+
+# #region the dev command
+
+# Links one of the dev command's files into place. A link into this
+# workspace's scripts from an earlier layout is repointed, and a regular file
+# mentioning devroot is a copy an earlier setup installed, adopted so stale
+# versions cannot linger. Anything else there is not ours and stays.
+link_dev() {
+  local src=$1 dest=$2 label=$3
+  if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
+    say "ok       $label"
+  elif [ -L "$dest" ] && case "$(readlink "$dest")" in "$ROOT"/scripts/*) true ;; *) false ;; esac; then
+    say "relink   $label (moved within scripts/)"
+    ln -sf "$src" "$dest"
+  elif [ ! -L "$dest" ] && [ -f "$dest" ] && grep -q devroot "$dest"; then
+    say "replace  $label (old copied version)"
+    ln -sf "$src" "$dest"
+  elif [ -e "$dest" ] || [ -L "$dest" ]; then
+    say "note     $label exists and is not ours — leaving it"
+  else
+    say "link     $label"
+    mkdir -p "$(dirname "$dest")"
+    ln -s "$src" "$dest"
+  fi
+}
+
+# The dev command's files and where they go: scripts/dev into ~/.local/bin
+# for any shell, plus dev.fish into ~/.config/fish/functions where fish
+# exists. Linked, so edits apply immediately.
+dev_links() {
+  printf '%s\t%s\t%s\n' "$ROOT/scripts/dev" "$HOME/.local/bin/dev" '~/.local/bin/dev'
+  command -v fish > /dev/null 2>&1 || return 0
+  printf '%s\t%s\t%s\n' "$ROOT/scripts/dev.fish" "$HOME/.config/fish/functions/dev.fish" '~/.config/fish/functions/dev.fish'
+}
+
+dev_installed() {
+  local src dest label
+  while IFS=$'\t' read -r src dest label; do
+    [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ] || return 1
+  done < <(dev_links)
+}
+
+# Installing dev touches the home directory, so it is asked about, except
+# where it already is, and skipped without a terminal. An unattended caller
+# that runs in a PTY, such as a devcontainer lifecycle command, cannot be told
+# apart from a person, so it passes -y or --no-shell-install.
+if [ "$INSTALL_DEV" = no ]; then
+  say "skip     dev command (--no-shell-install)"
+elif [ "$INSTALL_DEV" = ask ] && { [ ! -t 0 ] || [ ! -t 1 ]; }; then
+  say "skip     dev command (non-interactive shell)"
+else
+  if [ "$INSTALL_DEV" = ask ] && ! dev_installed; then
+    targets='~/.local/bin'
+    command -v fish > /dev/null 2>&1 && targets="$targets and ~/.config/fish/functions"
+    printf '  ask      Install the dev command into %s? [Y/n] ' "$targets"
+    read -r answer || answer=
+    case "$answer" in
+      [nN]*) INSTALL_DEV=no ;;
+      *) INSTALL_DEV=yes ;;
+    esac
+  fi
+  if [ "$INSTALL_DEV" = no ]; then
+    say "skip     dev command"
+  else
+    while IFS=$'\t' read -r src dest label; do
+      link_dev "$src" "$dest" "$label"
+    done < <(dev_links)
+    case ":$PATH:" in
+      *":$HOME/.local/bin:"*) ;;
+      *) say "note     ~/.local/bin is not on PATH in this shell" ;;
+    esac
+  fi
+fi
+
+# #endregion
+
+printf '\n'
+"$ROOT/scripts/sync-workspace"
+[ "$NEEDS_HUMAN" -eq 0 ] || exit 3

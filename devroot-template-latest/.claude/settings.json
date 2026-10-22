@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=\"${CLAUDE_PROJECT_DIR:-.}/vault\"; [ -d \"$d/.git\" ] && git -C \"$d\" pull --rebase --autostash -q > /dev/null 2>&1; [ -f \"$d/USER.md\" ] && { echo 'vault/USER.md, who the user is and their goals:'; cat \"$d/USER.md\"; echo; }; [ -f \"$d/index.md\" ] && { echo 'vault/index.md, the vault recall surface:'; cat \"$d/index.md\"; } || true",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

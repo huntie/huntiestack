@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+#
+# Sync a checkout's default branch with upstream and origin, staying where you are.
+#
+# Parks uncommitted work as a WIP commit on the current branch or stack,
+# rebases the default branch onto the base remote (upstream, else origin),
+# pushes it to origin when origin is a fork, and returns to the branch or
+# commit it started on. A detached HEAD that sat on the default branch's tip,
+# as sl goto leaves one, stays on the refreshed branch instead. The default
+# branch ends level with both remotes,
+# which is the state scripts/checkout --new starts a task branch from. When
+# commit-cloud is set up (a .commit-cloud/ clone at the root), a Sapling
+# checkout also restores the draft stacks other machines backed up with
+# scripts/commit-cloud.
+#
+# Exit codes: 0 level, 1 error, 2 usage; 3 means something needs a human.
+
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+
+case "${1:-}" in
+  -h | --help)
+    printf '%s\n' \
+      'Usage: scripts/pull [<checkout>]' \
+      '' \
+      'Parks uncommitted work as a "WIP <date>" commit where it is, rebases the' \
+      'default branch onto upstream (or origin when there is no upstream), pushes' \
+      'it to origin when origin is a fork, and returns to the branch or commit it' \
+      'started on. A detached HEAD that sat on the default branch'"'"'s tip stays' \
+      'on the refreshed branch.' \
+      'In a Sapling checkout (devroot.vcs=sapling), work on a detached stack is' \
+      'parked with sl commit, which keeps it visible. When commit-cloud is set up,' \
+      'the draft stacks other machines backed up with scripts/commit-cloud are' \
+      'restored.' \
+      '' \
+      '  <checkout>   Path to the checkout, relative to the root or absolute.' \
+      '               Defaults to the checkout containing the current directory.' \
+      '' \
+      'Exits 0 level, 1 error, 2 usage; 3 when the rebase or the push is not clean.'
+    exit 0
+    ;;
+  -*)
+    echo "pull: unknown option '$1'" >&2
+    exit 2
+    ;;
+esac
+
+if [ $# -gt 1 ]; then
+  echo "pull: expected at most one checkout" >&2
+  exit 2
+fi
+
+if [ $# -eq 1 ]; then
+  case "$1" in
+    /*) dir="${1%/}" ;;
+    *) dir="$ROOT/${1%/}" ;;
+  esac
+  [ -d "$dir/.git" ] || {
+    echo "pull: $1 is not a git checkout" >&2
+    exit 1
+  }
+else
+  dir=$(git rev-parse --show-toplevel 2> /dev/null || true)
+  [ -n "$dir" ] && [ "$dir" != "$ROOT" ] || {
+    echo "pull: run inside a checkout, or pass its path" >&2
+    exit 2
+  }
+fi
+
+say() { printf '  %s\n' "$*"; }
+
+printf 'devroot: %s\n' "$ROOT"
+say "checkout ${dir#$ROOT/}"
+
+base_remote=origin
+if git -C "$dir" remote get-url upstream > /dev/null 2>&1; then
+  base_remote=upstream
+fi
+# The default branch's tip before the fetch, to tell a detached HEAD that sat
+# on it from one on an older commit.
+pre_tip=$(git -C "$dir" rev-parse --quiet --verify "refs/remotes/$base_remote/HEAD^{commit}" 2> /dev/null || true)
+say "fetch    $base_remote"
+git -C "$dir" fetch --quiet "$base_remote"
+git -C "$dir" remote set-head "$base_remote" --auto > /dev/null 2>&1 || true
+base=$(git -C "$dir" symbolic-ref --quiet --short "refs/remotes/$base_remote/HEAD" 2> /dev/null || true)
+base="${base#"$base_remote/"}"
+[ -n "$base" ] || {
+  echo "pull: cannot tell the default branch of $base_remote" >&2
+  exit 1
+}
+pre_local_tip=$(git -C "$dir" rev-parse --quiet --verify "refs/heads/$base^{commit}" 2> /dev/null || true)
+
+if [ -n "$(git -C "$dir" status --porcelain)" ]; then
+  branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)
+  msg="WIP $(date '+%Y-%m-%d %H:%M')"
+  if [ -z "$branch" ] && [ "$(git -C "$dir" config --get devroot.vcs || true)" = "sapling" ]; then
+    # From inside the checkout: see ensure_sl_config in scripts/checkout.
+    say "park     uncommitted work on the detached stack as \"$msg\""
+    (cd "$dir" && sl commit --addremove --quiet -m "$msg")
+  else
+    [ -n "$branch" ] || {
+      echo "pull: uncommitted work on a detached HEAD — commit or stash it by hand first" >&2
+      exit 3
+    }
+    git -C "$dir" add -A
+    # See park_wip in scripts/checkout: a stale index after an sl amend.
+    if ! git -C "$dir" diff --cached --quiet; then
+      say "park     uncommitted work on $branch as \"$msg\""
+      git -C "$dir" commit --quiet --no-verify -m "$msg"
+    fi
+  fi
+fi
+
+if [ "$(git -C "$dir" config --get devroot.vcs || true)" = "sapling" ] && [ -d "$ROOT/.commit-cloud/.git" ]; then
+  say "restore  draft stacks from commit-cloud"
+  "$ROOT/scripts/commit-cloud" restore "$dir" | sed -n 's/^  /    /p' \
+    || say "note     restore did not finish — rerun scripts/commit-cloud restore"
+fi
+
+# Where to return to, after any WIP commit: a branch, else the exact commit.
+start_branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)
+start_commit=$(git -C "$dir" rev-parse HEAD)
+
+# Returns to the starting point and reports the default branch's state. A
+# detached HEAD that sat on the default branch's tip started on the branch for
+# this purpose, and stays on it now that it has moved.
+finish() {
+  if [ "$start_branch" = "$base" ]; then
+    :
+  elif [ -z "$start_branch" ] && { [ "$start_commit" = "$pre_tip" ] || [ "$start_commit" = "$pre_local_tip" ]; }; then
+    say "stay     on $base, where HEAD sat"
+  elif [ -n "$start_branch" ]; then
+    say "switch   back to $start_branch"
+    git -C "$dir" checkout --quiet "$start_branch"
+  else
+    say "switch   back to ${start_commit:0:12}"
+    git -C "$dir" checkout --quiet --detach "$start_commit"
+  fi
+  say "ok       $base level with $1"
+}
+
+if git -C "$dir" show-ref --verify --quiet "refs/heads/$base"; then
+  say "switch   $base"
+  git -C "$dir" checkout --quiet "$base"
+  say "rebase   $base onto $base_remote/$base"
+  if ! git -C "$dir" rebase --quiet "$base_remote/$base" > /dev/null 2>&1; then
+    git -C "$dir" rebase --abort
+    echo "pull: $base does not rebase cleanly onto $base_remote/$base — resolve by hand, then rerun" >&2
+    exit 3
+  fi
+else
+  say "branch   $base (tracking $base_remote/$base)"
+  git -C "$dir" checkout --quiet -b "$base" --track "$base_remote/$base"
+fi
+
+# On a shared repo origin is the base remote: there is nothing to sync, and a
+# local commit on the default branch is never pushed to the canonical repo.
+if [ "$base_remote" = origin ]; then
+  if [ -n "$(git -C "$dir" rev-list "origin/$base..$base")" ]; then
+    echo "pull: $base has commits origin/$base lacks — move them to a task branch by hand" >&2
+    exit 3
+  fi
+  finish "origin/$base"
+  exit 0
+fi
+
+say "push     $base -> origin/$base"
+if ! git -C "$dir" push --quiet origin "$base" > /dev/null 2>&1; then
+  echo "pull: origin/$base did not fast-forward — push it by hand" >&2
+  exit 3
+fi
+finish "$base_remote/$base and origin/$base"
