@@ -34,7 +34,6 @@ devroot/
   # Skills (installed to .[agents|claude]|/skills/)
   skills/          # Published to huntie/skills and huntie/huntiestack
   skills-lock.json # Third party skills
-  huntiestack.toml # What publish-huntiestack ships: skills, and a devroot template
 ```
 
 ## Setup
