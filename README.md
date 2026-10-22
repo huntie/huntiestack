@@ -38,4 +38,4 @@ That fetches `devroot-template-latest/` from this repo, installs every skill fro
 
 #### This is a starting point!
 
-Everyone's dev setup is different. `/setup-devroot` gives you a folder structure, control plane scripts, and the `vault` repo. You're free to customise the vault as you need, as well as to uninstall my skills in `skills-lock.json`. Build what works for you 💯.
+Everyone's dev setup is different. `/setup-devroot` gives you a folder structure, control plane scripts, and the `vault` repo. You're free to customise the vault as you need, as well as to uninstall my skills in `skills-lock.json` and fork them in your `skills/` folder. Build what works for you 💯.
