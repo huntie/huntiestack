@@ -1,6 +1,6 @@
 # Vault
 
-Knowledge store for the [devroot](https://github.com/huntie/devroot) workspace — a shared brain holding plans, user context, and working knowledge that span over sessions and checkouts.
+Knowledge store for the devroot workspace — a shared brain holding plans, user context, and working knowledge that span over sessions and checkouts.
 
 **This is a private repo per user.**
 

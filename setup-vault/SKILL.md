@@ -1,6 +1,7 @@
 ---
 name: setup-vault
 description: First-time setup of vault/ as a private git repository with its README, index, committing policy, and gitignore. Use only when the user invokes /setup-vault.
+license: MIT
 disable-model-invocation: true
 ---
 
