@@ -18,7 +18,7 @@ The repo itself is small: a folder structure, an `AGENTS.md`, a dozen bash scrip
 
 ### What's actually in this repo
 
-This is a public starter kit for `devroot` mirrored from my personal `huntie/devroot` repo (private).
+This the a public starter kit for `devroot` mirrored from my personal `huntie/devroot` repo (private).
 
 - The `/setup-devroot` and `/setup-vault` skills, installable via `npx skills`.
 - The synced `devroot-template-latest/` folder, containing the public core of devroot, that the setup skill downloads.
