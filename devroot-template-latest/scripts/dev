@@ -54,12 +54,12 @@ case "${1:-}" in
   init)
     cat <<'FN'
 dev() {
-  local root
+  local root dir
   root=$(command dev) || return
   if [ $# -eq 0 ]; then
     cd "$root"
-  elif [ ! -x "$root/scripts/$1" ] && [ -d "$root/projects/$1" ]; then
-    cd "$root/projects/$1"
+  elif [ ! -x "$root/scripts/$1" ] && dir=$(command dev "$1" 2> /dev/null); then
+    cd "$dir"
   else
     command dev "$@"
   fi
@@ -78,8 +78,19 @@ if [ -x "$script" ]; then
   shift
   exec "$script" "$@"
 fi
-if [ -d "$ROOT/projects/$1" ]; then
-  printf '%s\n' "$ROOT/projects/$1"
+dir="$ROOT/projects/$1"
+# A gclient workspace nests the checkout one level down, beside its
+# bookkeeping, so <dir>/<name> resolves to <dir>/*/<name> when nothing sits
+# at the top.
+if [ ! -d "$dir/.git" ]; then
+  for nested in "${dir%/*}"/*/"${dir##*/}"; do
+    [ -d "$nested/.git" ] && [ ! -d "${nested%/*}/.git" ] || continue
+    dir="$nested"
+    break
+  done
+fi
+if [ -d "$dir" ]; then
+  printf '%s\n' "$dir"
   exit 0
 fi
 

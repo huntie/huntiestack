@@ -53,6 +53,16 @@ fi
 
 if [ $# -eq 1 ]; then
   case "$1" in
+  # A gclient workspace nests the checkout one level down, beside its
+  # bookkeeping, so <dir>/<name> resolves to <dir>/*/<name> when nothing sits
+  # at the top.
+  if [ ! -d "$dir/.git" ]; then
+    for nested in "${dir%/*}"/*/"${dir##*/}"; do
+      [ -d "$nested/.git" ] && [ ! -d "${nested%/*}/.git" ] || continue
+      dir="$nested"
+      break
+    done
+  fi
     /*) dir="${1%/}" ;;
     *) dir="$ROOT/${1%/}" ;;
   esac

@@ -518,17 +518,35 @@ if [ "$RESTORE_ONLY" -eq 1 ] && [ ! -d "$CC_DIR/.git" ]; then
   exit 0
 fi
 
+# A gclient workspace nests the checkout one level down, beside its
+# bookkeeping: a named <dir>/<name> resolves to <dir>/*/<name> when nothing
+# sits at the top, and the default list looks one level inside a directory
+# that is not itself a checkout.
 dirs=()
 if [ $# -gt 0 ]; then
   for arg in "$@"; do
     case "$arg" in
-      /*) dirs+=("${arg%/}") ;;
-      *) dirs+=("$ROOT/${arg%/}") ;;
+      /*) dir="${arg%/}" ;;
+      *) dir="$ROOT/${arg%/}" ;;
     esac
+    if [ ! -d "$dir/.git" ]; then
+      for nested in "${dir%/*}"/*/"${dir##*/}"; do
+        [ -d "$nested/.git" ] && [ ! -d "${nested%/*}/.git" ] || continue
+        dir="$nested"
+        break
+      done
+    fi
+    dirs+=("$dir")
   done
 else
   for d in "$ROOT"/projects/*/; do
-    [ -d "$d.git" ] && dirs+=("${d%/}")
+    if [ -d "$d.git" ]; then
+      dirs+=("${d%/}")
+      continue
+    fi
+    for nested in "$d"*/; do
+      [ -d "$nested.git" ] && dirs+=("${nested%/}")
+    done
   done
 fi
 

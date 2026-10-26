@@ -27,8 +27,20 @@ function dev --description 'Run a devroot script or jump into the workspace'
     return $status
   end
 
-  if test -d $DEVROOT/projects/$argv[1]
-    cd $DEVROOT/projects/$argv[1]
+  # A gclient workspace nests the checkout one level down, beside its
+  # bookkeeping, so projects/<name> resolves to projects/*/<name> when nothing
+  # sits at the top.
+  set -l dir $DEVROOT/projects/$argv[1]
+  if not test -d $dir/.git
+    for nested in $DEVROOT/projects/*/$argv[1]
+      if test -d $nested/.git; and not test -d (path dirname $nested)/.git
+        set dir $nested
+        break
+      end
+    end
+  end
+  if test -d $dir
+    cd $dir
     return 0
   end
 

@@ -86,6 +86,16 @@ if [ -n "$dir_arg" ]; then
     /*) dir="${dir_arg%/}" ;;
     *) dir="$ROOT/${dir_arg%/}" ;;
   esac
+  # A gclient workspace nests the checkout one level down, beside its
+  # bookkeeping, so <dir>/<name> resolves to <dir>/*/<name> when nothing sits
+  # at the top.
+  if [ ! -d "$dir/.git" ]; then
+    for nested in "${dir%/*}"/*/"${dir##*/}"; do
+      [ -d "$nested/.git" ] && [ ! -d "${nested%/*}/.git" ] || continue
+      dir="$nested"
+      break
+    done
+  fi
 else
   dir=$(git rev-parse --show-toplevel 2> /dev/null || true)
   [ -n "$dir" ] || {

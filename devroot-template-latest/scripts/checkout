@@ -181,20 +181,34 @@ have_gh() { command -v gh > /dev/null && gh auth status > /dev/null 2>&1; }
 # Find an existing checkout of $TARGET_REPO under the target dir by its
 # remotes, so a checkout under a different folder name (--name) is still found
 # rather than re-cloned. The remotes are the identity; no manifest records the
-# mapping.
+# mapping. A directory that is not itself a checkout is searched one level
+# down, where a gclient workspace nests the checkout beside its bookkeeping.
+same_repo() {
+  local candidate=$1 url remote
+  [ -d "$candidate/.git" ] || return 1
+  for remote in origin upstream; do
+    url=$(git -C "$candidate" remote get-url "$remote" 2> /dev/null) || continue
+    case "$url" in
+      *[:/]"$TARGET_REPO".git | *[:/]"$TARGET_REPO") return 0 ;;
+    esac
+  done
+  return 1
+}
+
 find_existing() {
-  local d url r
+  local d nested
   for d in "$ROOT/$TARGET_DIR"/*/; do
     d="${d%/}"
-    [ -d "$d/.git" ] || continue
-    for r in origin upstream; do
-      url=$(git -C "$d" remote get-url "$r" 2> /dev/null) || continue
-      case "$url" in
-        *[:/]"$TARGET_REPO".git | *[:/]"$TARGET_REPO")
-          printf '%s\n' "$d"
-          return 0
-          ;;
-      esac
+    if same_repo "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+    [ -d "$d/.git" ] && continue
+    for nested in "$d"/*/; do
+      nested="${nested%/}"
+      same_repo "$nested" || continue
+      printf '%s\n' "$nested"
+      return 0
     done
   done
   return 1
@@ -253,7 +267,7 @@ if [ -e "$dir" ]; then
 elif existing=$(find_existing); then
   dir="$existing"
   name="${dir##*/}"
-  say "exists   $TARGET_DIR/$name (matched $TARGET_REPO by remote)"
+  say "exists   ${dir#$ROOT/} (matched $TARGET_REPO by remote)"
 else
   mkdir -p "$ROOT/$TARGET_DIR"
   if have_gh; then
