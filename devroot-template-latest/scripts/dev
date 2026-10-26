@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 #
-# Run a devroot script from anywhere, or print a path in the workspace.
+# Run a devroot script from anywhere, or print the workspace root.
 #
 #   dev help                           index of the devroot scripts
 #   dev checkout react/react-native    run scripts/checkout
 #   dev                                print the workspace root
-#   dev react-native                   print projects/react-native
-#   eval "$(dev init)"                 make the last two cd instead, in bash or zsh
+#   eval "$(dev init)"                 make the last one cd instead, in bash or zsh
 #
 # Linked by scripts/setup into ~/.local/bin, so it works in any shell with no
 # profile changes; dev.fish is the fish function, with cd built in. The root
@@ -30,14 +29,13 @@ ROOT=${DEVROOT:-$(cd "$(dirname "$self")/.." && pwd -P)}
 usage() {
   printf '%s\n' \
     'Usage: dev <script> [args...]' \
-    '       dev [<project>]' \
+    '       dev' \
     '       eval "$(dev init)"' \
     '' \
     'Runs scripts/<script> in the devroot this command is linked from, from any' \
-    'directory. Alone it prints the workspace root, and with a project name the' \
-    'path of that checkout under projects/, for cd "$(dev expo)". In bash or zsh,' \
-    'eval "$(dev init)" in the shell profile defines a dev function that cds for' \
-    'those two forms itself; the fish function does so already.' \
+    'directory. Alone it prints the workspace root, for cd "$(dev)". In bash or' \
+    'zsh, eval "$(dev init)" in the shell profile defines a dev function that cds' \
+    'there itself; the fish function does so already.' \
     '' \
     'Exits 0 done, 2 usage or unknown name; a script'\''s own otherwise.'
 }
@@ -54,12 +52,8 @@ case "${1:-}" in
   init)
     cat <<'FN'
 dev() {
-  local root dir
-  root=$(command dev) || return
   if [ $# -eq 0 ]; then
-    cd "$root"
-  elif [ ! -x "$root/scripts/$1" ] && dir=$(command dev "$1" 2> /dev/null); then
-    cd "$dir"
+    cd "$(command dev)" || return
   else
     command dev "$@"
   fi
@@ -78,26 +72,11 @@ if [ -x "$script" ]; then
   shift
   exec "$script" "$@"
 fi
-dir="$ROOT/projects/$1"
-# A gclient workspace nests the checkout one level down, beside its
-# bookkeeping, so <dir>/<name> resolves to <dir>/*/<name> when nothing sits
-# at the top.
-if [ ! -d "$dir/.git" ]; then
-  for nested in "${dir%/*}"/*/"${dir##*/}"; do
-    [ -d "$nested/.git" ] && [ ! -d "${nested%/*}/.git" ] || continue
-    dir="$nested"
-    break
-  done
-fi
-if [ -d "$dir" ]; then
-  printf '%s\n' "$dir"
-  exit 0
-fi
 
 names=
 for f in "$ROOT"/scripts/*; do
   [ -x "$f" ] && names="$names ${f##*/}"
 done
-echo "dev: no script or checkout '$1' in $ROOT" >&2
+echo "dev: no script '$1' in $ROOT" >&2
 echo "     scripts:$names" >&2
 exit 2
