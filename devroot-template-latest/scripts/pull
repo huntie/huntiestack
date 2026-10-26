@@ -5,9 +5,7 @@
 # Parks uncommitted work as a WIP commit on the current branch or stack,
 # rebases the default branch onto the base remote (upstream, else origin),
 # pushes it to origin when origin is a fork, and returns to the branch or
-# commit it started on. A detached HEAD that sat on the default branch's tip,
-# as sl goto leaves one, stays on the refreshed branch instead. The default
-# branch ends level with both remotes,
+# commit it started on. The default branch ends level with both remotes,
 # which is the state scripts/checkout --new starts a task branch from. When
 # commit-cloud is set up (a .commit-cloud/ clone at the root), a Sapling
 # checkout also restores the draft stacks other machines backed up with
@@ -27,8 +25,7 @@ case "${1:-}" in
       'Parks uncommitted work as a "WIP <date>" commit where it is, rebases the' \
       'default branch onto upstream (or origin when there is no upstream), pushes' \
       'it to origin when origin is a fork, and returns to the branch or commit it' \
-      'started on. A detached HEAD that sat on the default branch'"'"'s tip stays' \
-      'on the refreshed branch.' \
+      'started on.' \
       'In a Sapling checkout (devroot.vcs=sapling), work on a detached stack is' \
       'parked with sl commit, which keeps it visible. When commit-cloud is set up,' \
       'the draft stacks other machines backed up with scripts/commit-cloud are' \
@@ -53,6 +50,9 @@ fi
 
 if [ $# -eq 1 ]; then
   case "$1" in
+    /*) dir="${1%/}" ;;
+    *) dir="$ROOT/${1%/}" ;;
+  esac
   # A gclient workspace nests the checkout one level down, beside its
   # bookkeeping, so <dir>/<name> resolves to <dir>/*/<name> when nothing sits
   # at the top.
@@ -63,9 +63,6 @@ if [ $# -eq 1 ]; then
       break
     done
   fi
-    /*) dir="${1%/}" ;;
-    *) dir="$ROOT/${1%/}" ;;
-  esac
   [ -d "$dir/.git" ] || {
     echo "pull: $1 is not a git checkout" >&2
     exit 1
@@ -87,8 +84,6 @@ base_remote=origin
 if git -C "$dir" remote get-url upstream > /dev/null 2>&1; then
   base_remote=upstream
 fi
-# The default branch's tip before the fetch, to tell a detached HEAD that sat
-# on it from one on an older commit.
 pre_tip=$(git -C "$dir" rev-parse --quiet --verify "refs/remotes/$base_remote/HEAD^{commit}" 2> /dev/null || true)
 say "fetch    $base_remote"
 git -C "$dir" fetch --quiet "$base_remote"
@@ -132,9 +127,7 @@ fi
 start_branch=$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)
 start_commit=$(git -C "$dir" rev-parse HEAD)
 
-# Returns to the starting point and reports the default branch's state. A
-# detached HEAD that sat on the default branch's tip started on the branch for
-# this purpose, and stays on it now that it has moved.
+# Returns to the starting point and reports the default branch's state.
 finish() {
   if [ "$start_branch" = "$base" ]; then
     :
