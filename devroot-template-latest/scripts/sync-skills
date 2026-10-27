@@ -90,14 +90,14 @@ link_skill() {
 
 # A directory whose name starts with "_" is a group, not a skill: each of its
 # children is linked by its own name, one level deep. Skill names stay unique
-# across the tree, which the clash check enforces. _public-overrides/ is the
-# exception: its skills are public copies that publish-huntiestack ships in place
-# of the private ones, and sessions here use the private ones.
+# across the tree, which the clash check enforces. _public/ is never linked:
+# it holds what publish-huntiestack ships, a public copy in place of a private
+# skill of the same name, or a skill only the public uses.
 for src in "$SKILLS_DIR"/*/; do
   [ -d "$src" ] || continue
   name=$(basename "$src")
   case "$name" in
-    _public-overrides) ;;
+    _public) ;;
     _*)
       for child in "$src"*/; do
         [ -d "$child" ] || continue
