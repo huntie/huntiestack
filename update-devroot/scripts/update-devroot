@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+#
+# Bring a devroot's template files up to date with huntiestack, as one commit.
+#
+# The base is the huntiestack commit in .devroot-version, or for a devroot made
+# before that file existed, the last template commit at or before the initial
+# commit's date; --from overrides either. The template at the base and at the
+# latest template commit are fetched through gh, committed one after the other
+# in a temporary repository, and that delta is cherry-picked onto the devroot
+# with no commit: a three-way merge, so a local edit elsewhere in a changed
+# file survives and only an overlapping edit conflicts. .devroot-version then
+# moves to the latest commit and the result is committed as
+# "Update devroot to <short sha>".
+#
+# Exit codes: 0 updated or already level, 1 error, 2 usage; 3 when the merge
+# left conflicts to resolve by hand before committing.
+
+set -euo pipefail
+
+TEMPLATE_REPO="huntie/huntiestack"
+TEMPLATE_DIR="devroot-template-latest"
+VERSION_FILE=".devroot-version"
+
+FROM=""
+DRY=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from)
+      case "${2:-}" in
+        '' | -*)
+          echo "update-devroot: --from needs a $TEMPLATE_REPO commit" >&2
+          exit 2
+          ;;
+      esac
+      FROM="$2"
+      shift
+      ;;
+    --dry-run | -n) DRY=1 ;;
+    -h | --help)
+      printf '%s\n' \
+        'Usage: update-devroot [--from <sha>] [--dry-run]' \
+        '' \
+        "Updates the devroot containing the current directory to the latest $TEMPLATE_DIR/" \
+        "on $TEMPLATE_REPO, merging the template'\''s changes since the commit in" \
+        "$VERSION_FILE three-way with any local edits, then commits the result as" \
+        '"Update devroot to <sha>". The tree must be clean. Needs git and gh signed in.' \
+        '' \
+        "  --from <sha>   The $TEMPLATE_REPO commit the devroot'\''s template files came" \
+        "                 from, when $VERSION_FILE is missing or wrong. Without it a" \
+        '                 missing file resolves to the last template commit before' \
+        '                 the initial commit.' \
+        '  --dry-run      Print the range and the files it changes, touching nothing.' \
+        '' \
+        'Exits 0 updated or already level, 1 error, 2 usage; 3 when conflicts are left' \
+        'to resolve: fix them, git add, and commit; git reset --hard HEAD undoes the run.'
+      exit 0
+      ;;
+    *)
+      echo "update-devroot: unknown argument '$1'" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+say() { printf '  %s\n' "$*"; }
+
+command -v gh > /dev/null && gh auth status > /dev/null 2>&1 || {
+  echo "update-devroot: needs gh, signed in (gh auth login), to fetch the template" >&2
+  exit 1
+}
+
+ROOT=$(git rev-parse --show-toplevel 2> /dev/null || true)
+[ -n "$ROOT" ] && [ -f "$ROOT/AGENTS.md" ] && [ -d "$ROOT/scripts" ] || {
+  echo "update-devroot: run inside a devroot (a git checkout with AGENTS.md and scripts/)" >&2
+  exit 1
+}
+root_git() { git -C "$ROOT" "$@"; }
+
+[ -z "$(root_git status --porcelain --untracked-files=no)" ] || {
+  echo "update-devroot: the tree has uncommitted changes; commit them first" >&2
+  exit 1
+}
+
+printf 'devroot: %s\n' "$ROOT"
+
+# #region the range
+
+api_sha() { gh api "$1" --jq "$2" 2> /dev/null || true; }
+
+if [ -n "$FROM" ]; then
+  base=$(api_sha "repos/$TEMPLATE_REPO/commits/$FROM" .sha)
+  [ -n "$base" ] || {
+    echo "update-devroot: '$FROM' is not a commit on $TEMPLATE_REPO" >&2
+    exit 1
+  }
+  say "base     ${base:0:7} (--from)"
+elif [ -f "$ROOT/$VERSION_FILE" ]; then
+  base=$(head -1 "$ROOT/$VERSION_FILE" | tr -d '[:space:]')
+  [ -n "$(api_sha "repos/$TEMPLATE_REPO/commits/$base" .sha)" ] || {
+    echo "update-devroot: $VERSION_FILE holds '$base', not a commit on $TEMPLATE_REPO; pass --from <sha>" >&2
+    exit 1
+  }
+  say "base     ${base:0:7} ($VERSION_FILE)"
+else
+  initial=$(root_git log --reverse --format=%cI --grep='^Initialize devroot from huntiestack' | head -1)
+  [ -n "$initial" ] || {
+    echo "update-devroot: no $VERSION_FILE and no initial huntiestack commit to date it from; pass --from <sha>" >&2
+    exit 1
+  }
+  base=$(api_sha "repos/$TEMPLATE_REPO/commits?path=$TEMPLATE_DIR&until=$initial&per_page=1" '.[0].sha')
+  [ -n "$base" ] || {
+    echo "update-devroot: no $TEMPLATE_DIR commit on $TEMPLATE_REPO before $initial; pass --from <sha>" >&2
+    exit 1
+  }
+  say "base     ${base:0:7} (last template commit before the initial commit, $initial)"
+fi
+
+latest=$(api_sha "repos/$TEMPLATE_REPO/commits?path=$TEMPLATE_DIR&per_page=1" '.[0].sha')
+[ -n "$latest" ] || {
+  echo "update-devroot: could not resolve the latest $TEMPLATE_DIR commit on $TEMPLATE_REPO" >&2
+  exit 1
+}
+
+if [ "$base" = "$latest" ]; then
+  if [ ! -f "$ROOT/$VERSION_FILE" ] && [ "$DRY" -eq 0 ]; then
+    printf '%s\n' "$latest" > "$ROOT/$VERSION_FILE"
+    root_git add "$VERSION_FILE"
+    root_git commit --quiet -m "Update devroot to ${latest:0:7}" -m "Records the $TEMPLATE_REPO commit the template files came from."
+    say "commit   $(root_git log -1 --format=%h) Update devroot to ${latest:0:7} ($VERSION_FILE only)"
+  fi
+  say "ok       level with $TEMPLATE_REPO/$TEMPLATE_DIR@${latest:0:7}"
+  exit 0
+fi
+
+say "update   ${base:0:7}..${latest:0:7}"
+gh api "repos/$TEMPLATE_REPO/compare/$base...$latest" --paginate \
+  --jq ".files[] | select(.filename | startswith(\"$TEMPLATE_DIR/\")) | .status + \"  \" + (.filename | ltrimstr(\"$TEMPLATE_DIR/\"))" \
+  | sed 's/^/           /'
+
+if [ "$DRY" -eq 1 ]; then
+  say "[dry-run] merge, write $VERSION_FILE, commit Update devroot to ${latest:0:7}"
+  exit 0
+fi
+
+# #endregion
+# #region the delta as a commit
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+fetch_template() {
+  local sha="$1" dest="$2" src
+  gh api "repos/$TEMPLATE_REPO/tarball/$sha" > "$tmp/$sha.tar.gz"
+  mkdir -p "$tmp/x-$sha"
+  tar -xzf "$tmp/$sha.tar.gz" -C "$tmp/x-$sha"
+  src=$(find "$tmp/x-$sha" -mindepth 2 -maxdepth 2 -type d -name "$TEMPLATE_DIR" | head -1)
+  [ -n "$src" ] || {
+    echo "update-devroot: $TEMPLATE_REPO@${sha:0:7} has no $TEMPLATE_DIR/" >&2
+    exit 1
+  }
+  mkdir -p "$dest"
+  cp -R "$src/." "$dest/"
+}
+
+say "fetch    $TEMPLATE_REPO/$TEMPLATE_DIR at ${base:0:7} and ${latest:0:7}"
+fetch_template "$base" "$tmp/base"
+fetch_template "$latest" "$tmp/latest"
+
+delta="$tmp/delta"
+delta_git() { git -C "$delta" -c user.name=update-devroot -c user.email=update-devroot@localhost "$@"; }
+mkdir -p "$delta"
+delta_git init --quiet -b main
+cp -R "$tmp/base/." "$delta/"
+delta_git add -A
+delta_git commit --quiet -m "$TEMPLATE_DIR at ${base:0:7}"
+find "$delta" -mindepth 1 -not -path "$delta/.git" -not -path "$delta/.git/*" -delete
+cp -R "$tmp/latest/." "$delta/"
+delta_git add -A
+delta_git commit --quiet --allow-empty -m "$TEMPLATE_DIR at ${latest:0:7}"
+delta_sha=$(delta_git rev-parse HEAD)
+
+# #endregion
+# #region merge and commit
+
+root_git fetch --quiet "$delta" "$delta_sha"
+printf '%s\n' "$latest" > "$ROOT/$VERSION_FILE"
+root_git add "$VERSION_FILE"
+if ! root_git cherry-pick --no-commit "$delta_sha" > /dev/null 2>&1; then
+  say "conflict left in:"
+  root_git diff --name-only --diff-filter=U | sed 's/^/           /'
+  say "resolve, git add, then: git commit -m \"Update devroot to ${latest:0:7}\""
+  say "or undo with: git reset --hard HEAD"
+  exit 3
+fi
+root_git commit --quiet -m "Update devroot to ${latest:0:7}" -m "$TEMPLATE_REPO/$TEMPLATE_DIR ${base:0:7}..${latest:0:7}, merged with local edits."
+say "commit   $(root_git log -1 --format=%h) Update devroot to ${latest:0:7}"
+say "ok       level with $TEMPLATE_REPO/$TEMPLATE_DIR@${latest:0:7}"
+
+# #endregion
