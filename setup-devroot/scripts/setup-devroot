@@ -5,7 +5,8 @@
 # The template is fetched from the public repo through gh at its latest
 # commit touching the template, and that commit's sha is written to
 # .devroot-version, which update-devroot later reads; --template takes a
-# local copy instead and writes none. Skills come from the public skills repo through
+# local copy instead and writes none. Skills come from the public skills
+# repos, the personal set and the vendored pstack principles, through
 # `npx skills`, installed for two agents so that the copies land under
 # .agents/skills with links from .claude/skills, the layout the workspace's
 # own scripts keep. The workspace's own setup then runs for the GitHub user
@@ -18,7 +19,7 @@ set -euo pipefail
 
 TEMPLATE_REPO="huntie/huntiestack"
 TEMPLATE_DIR="devroot-template-latest"
-SKILLS_REPO="huntie/skills"
+SKILLS_REPOS=("huntie/skills" "huntie/skills-pstack-vendored")
 
 DIR=""
 USER_OWNER=""
@@ -52,8 +53,9 @@ while [ $# -gt 0 ]; do
         '' \
         'Creates a devroot workspace at <dir>, which must be new or empty: the' \
         "$TEMPLATE_DIR/ files from $TEMPLATE_REPO at its latest commit, recorded in" \
-        ".devroot-version, then every skill from $SKILLS_REPO installed with npx" \
-        'skills, then an initial commit, then the workspace'\''s own scripts/setup.' \
+        ".devroot-version, then every skill from ${SKILLS_REPOS[0]} and" \
+        "${SKILLS_REPOS[1]} installed with npx skills, then an initial commit, then" \
+        'the workspace'\''s own scripts/setup.' \
         'Needs git, gh signed in, and npx.' \
         '' \
         '  --user         GitHub user or org whose dotfiles and vault repos setup' \
@@ -166,13 +168,15 @@ run git -C "$DIR" init -q -b main
 # #endregion
 # #region skills
 
-say "install  $SKILLS_REPO skills -> .agents/skills, .claude/skills"
 # From inside the workspace, so the install is project-level there.
-if [ "$DRY" -eq 1 ]; then
-  say "[dry-run] npx -y skills add $SKILLS_REPO --skill '*' --agent claude-code codex -y"
-else
-  (cd "$DIR" && npx -y skills add "$SKILLS_REPO" --skill '*' --agent claude-code codex -y > /dev/null)
-fi
+for repo in "${SKILLS_REPOS[@]}"; do
+  say "install  $repo skills -> .agents/skills, .claude/skills"
+  if [ "$DRY" -eq 1 ]; then
+    say "[dry-run] npx -y skills add $repo --skill '*' --agent claude-code codex -y"
+  else
+    (cd "$DIR" && npx -y skills add "$repo" --skill '*' --agent claude-code codex -y > /dev/null)
+  fi
+done
 
 # #endregion
 # #region the initial commit
