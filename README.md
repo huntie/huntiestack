@@ -67,7 +67,4 @@ devroot/
     index.md             # Index of all content
     USER.md              # Optional: Who you are and your goals
     COMMITTING_POLICY.md # How sessions commit here
-
-  # Optional: <user>/commit-cloud repo - private Git backups
-  .commit-cloud/   # `dev commit-cloud`
 ```
