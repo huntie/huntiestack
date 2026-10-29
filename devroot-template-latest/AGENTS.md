@@ -15,7 +15,6 @@ Two rules cover most tasks:
 devroot/
 ├── .agents/                # Committed per-agent skill links — sync-skills owns this
 ├── .claude/                # Same, for Claude Code
-├── .commit-cloud/          # Private <user>/commit-cloud checkout — scripts/commit-cloud owns this
 ├── vault/                  # The private <user>/vault checkout: plans and working knowledge for every repo; start at vault/index.md
 ├── scripts/                # Workspace scripts
 │   ├── dev.fish            # The `dev` dispatcher for interactive fish shells; linked by setup
@@ -53,10 +52,6 @@ devroot/
 - A task that edits several checkouts uses the same branch name in each; that shared name is the logical branch, created in every checkout the task touches and named when reporting or opening PRs.
 - A plan names its branch in `overview.md`; a session resuming the plan lands on that branch in each checkout it lists rather than starting a new one.
 - This repo, `vault`, and `dotfiles` are main-only: they commit on `main` and never branch.
-
-### Sapling draft stacks across machines
-
-- The commit-cloud skill covers backing up unpushed Sapling stacks to the private `<user>/commit-cloud` repo and restoring other machines' with `scripts/commit-cloud backup`. It is opt-in and Sapling only. Backing up is explicit; `scripts/pull` runs `scripts/commit-cloud restore`. Never edit `.commit-cloud/` by hand.
 
 ### Writing to the vault
 
