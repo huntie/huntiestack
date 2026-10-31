@@ -44,7 +44,7 @@ Everyone's dev setup is different. `/setup-devroot` gives you a folder structure
 
 The full devroot layout:
 
-```
+```sh
 devroot/
   # Optional: <user>/dotfiles — system dotfiles 
   dotfiles/
