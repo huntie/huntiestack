@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+#
+# Run sl pr submit after checking that every commit it will push is yours.
+#
+# sl pr submit pushes every draft commit under the working copy, one pull
+# request each, and bases each pull request on the head branch of the one
+# below. A commit that has landed upstream but is still a draft here, because
+# origin/main is behind, is pushed with the stack. So is a commit from someone
+# else's branch, and when it is linked to that pull request, its branch becomes
+# a base. Pulling first makes landed commits public; the checks refuse the rest.
+#
+# Exit codes: 0 submitted, 1 refused or failed, 2 usage.
+
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    'Usage: scripts/sl-pr-submit [<checkout>] [--draft]' \
+    '' \
+    'Runs sl pr submit in a Sapling checkout, which pushes every draft commit' \
+    'under the working copy as a pull request. It pulls first, so commits' \
+    'already on main are no longer drafts, then refuses the submit when a draft' \
+    'has another author, or is linked to a pull request whose head is not its' \
+    'pr<number> branch, which sl would use as the base of the one above.' \
+    '' \
+    '  <checkout>  Path to the checkout. Defaults to the current directory.' \
+    '  --draft     Open new pull requests as drafts.' \
+    '' \
+    'Exits 0 submitted, 1 refused or failed, 2 usage.'
+}
+
+dir=.
+draft=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --draft) draft=(--draft) ;;
+    -*)
+      echo "sl-pr-submit: unknown option '$1'" >&2
+      exit 2
+      ;;
+    *) dir=$1 ;;
+  esac
+  shift
+done
+
+# sl reads the config of the working directory, not of -R or --cwd.
+cd "$dir"
+sl root > /dev/null
+
+sl pull --quiet
+
+# The revset sl pr submit pushes.
+stack='sort(. % public(), rev)'
+me=$(sl config ui.username | sed -n 's/.*<\(.*\)>.*/\1/p')
+[ -n "$me" ] || {
+  echo "sl-pr-submit: ui.username has no email to compare authors against" >&2
+  exit 1
+}
+
+refuse=0
+while read -r node author url; do
+  if [ "$author" != "$me" ]; then
+    echo "sl-pr-submit: $node is by $author" >&2
+    refuse=1
+  fi
+  [ -n "$url" ] || continue
+  head=$(gh pr view "$url" --json headRefName --jq .headRefName)
+  if [ "$head" != "pr${url##*/}" ]; then
+    echo "sl-pr-submit: $node is linked to $url, whose head is $head" >&2
+    refuse=1
+  fi
+done < <(sl log -r "$stack" -T '{node|short} {author|email} {github_pull_request_url}\n')
+
+if [ "$refuse" -eq 1 ]; then
+  echo "sl-pr-submit: refused: those commits are not on main and not this stack's own; rebase the stack onto main without them" >&2
+  exit 1
+fi
+
+sl pr submit ${draft[@]+"${draft[@]}"}
