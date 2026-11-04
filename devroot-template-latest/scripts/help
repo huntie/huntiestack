@@ -52,6 +52,7 @@ width=0
 for f in "$SCRIPTS_DIR"/*; do
   [ -f "$f" ] && [ -x "$f" ] || continue
   name="${f##*/}"
+  [ "$name" != dev ] || continue
   names+=("$name")
   summaries+=("$(summary "$f")")
   if [ "${#name}" -gt "$width" ]; then
