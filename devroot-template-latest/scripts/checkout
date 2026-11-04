@@ -17,9 +17,10 @@
 # take.
 #
 # Idempotent: an existing checkout is configured, not re-cloned, and is found
-# by its remotes whatever its folder is named. Before any branch change,
-# uncommitted work is parked as a "WIP <date>" commit, so nothing is lost or
-# dragged across.
+# by its remotes whatever its folder is named. A first clone takes its folder
+# name from --name, else from known_checkouts.toml at the root, else from the
+# repo. Before any branch change, uncommitted work is parked as a "WIP <date>"
+# commit, so nothing is lost or dragged across.
 #
 # A private repo or your own repo clones directly (origin is the named repo; a
 # fork's parent becomes upstream), and branch lookup prefers origin over
@@ -101,7 +102,8 @@ while [ $# -gt 0 ]; do
         '                which infers it from the fork parent.' \
         '  --name        Directory name for the checkout, if it should differ from the' \
         '                repo. Only needed on the first clone; later runs find the' \
-        '                checkout by its remotes.' \
+        '                checkout by its remotes. known_checkouts.toml at the root sets' \
+        '                the default per repo, under a table named for the target dir.' \
         '' \
         'When git config has devroot.vcs=sapling, the checkout is committed to with sl' \
         'in its .git mode, and this sets the sl config for stacked GitHub PRs.'
@@ -171,7 +173,31 @@ esac
 
 owner="${TARGET_REPO%%/*}"
 repo="${TARGET_REPO##*/}"
-name="${NAME:-$repo}"
+
+# The folder name known_checkouts.toml gives $TARGET_REPO under $TARGET_DIR:
+#
+#   [projects]
+#   "react-native-community/cli" = "rn-community-cli"
+known_name() {
+  local file="$ROOT/known_checkouts.toml"
+  [ -f "$file" ] || return 0
+  awk -v section="[$TARGET_DIR]" -v repo="$TARGET_REPO" '
+    { sub(/[[:space:]]+$/, "") }
+    /^[[:space:]]*\[/ { in_section = ($0 == section); next }
+    in_section && index($0, "=") {
+      key = $0
+      sub(/[[:space:]]*=.*$/, "", key)
+      gsub(/^[[:space:]]*"|"$/, "", key)
+      if (key != repo) next
+      sub(/^[^=]*=[[:space:]]*"/, "")
+      sub(/".*$/, "")
+      print
+      exit
+    }' "$file"
+}
+
+name="${NAME:-$(known_name)}"
+name="${name:-$repo}"
 dir="$ROOT/$TARGET_DIR/$name"
 
 say() { printf '  %s\n' "$*"; }
