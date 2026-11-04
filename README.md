@@ -29,7 +29,7 @@ This the a public starter kit for `devroot` mirrored from my personal `huntie/de
 
 ## Get started
 
-Install the two skills here into your home directory, then ask your agent to set up a devroot of your own:
+Install all three skills here into your home directory, then ask your agent to set up a devroot of your own:
 
     npx skills add huntie/huntiestack -g
     /setup-devroot
