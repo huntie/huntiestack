@@ -4,7 +4,7 @@
 
 **Build a single agent-first dev workspace.**
 
-<img width="300" src="https://github.com/user-attachments/assets/2fa0e819-8d8a-435c-bad9-f2f147984a1f" />
+<img width="250" src="https://github.com/user-attachments/assets/2fa0e819-8d8a-435c-bad9-f2f147984a1f" />
 
 [Rebuilding Meta's Dev Stack Out of Meta | React Native Live](https://www.youtube.com/live/zazUsINu9AQ?si=v33vCNORWM08H9D_&t=613)
 
@@ -18,18 +18,20 @@ This repo ([huntiestack](https://github.com/huntie/huntiestack)) is a public sta
 
 ### Principles
 
-- **One development monorepo.** I often work across more than one open source repo to accomplish an idea. Agent sessions rooted at `~/devroot` are empowered to work across these. My `dotfiles` and agent skills can be maintained continuously in the same session.
-- **Shared config, skills, and context across machines.** One clone carries the entire setup to a Mac, a dev server, or a cloud agent environment. Skills load from the committed agent directories with no install step. `vault` is a live, intentionally updated knowledge base.
+- **One development monorepo.** I often work across more than one open source repo to accomplish an idea. Agent sessions rooted at `~/devroot` are empowered to work across these. My `dotfiles` and agent skills can be maintained continuously in the same session. Bug fixing something I just saw in Expo or React Native is **zero friction**.
+- **Shared config, skills, and context across machines.** One clone carries my entire dev setup to a Mac, a dev server, or a cloud agent environment. Skills load from the committed agent directories with no install step. `vault` is a live, intentionally updated knowledge base.
 - **Stacked version control and targeted FB-isms.** Scripts, skills, and IDE setup smoothing over daily workflows and a purposeful developer loop — for Git or [Sapling](https://sapling-scm.com/).
 
 ## Get started
 
 Install all three skills into your home directory, then ask your agent to set up a devroot of your own:
 
-    npx skills add huntie/huntiestack -g
-    /setup-devroot
+```sh
+npx skills add huntie/huntiestack --skill '*' -g
+/setup-devroot
+```
 
-That fetches `devroot-template-latest/` from this repo, installs every skill from [huntie/skills](https://github.com/huntie/skills), writes the initial commit, and runs the workspace's own setup.
+This fetches `devroot-template-latest/` from this repo, installs [skills](https://github.com/huntie/skills), writes the initial commit, and runs the minimal workspace setup script.
 
 #### This is a starting point!
 
