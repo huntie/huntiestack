@@ -16,8 +16,4 @@ macOS or Linux, and Node.js 22.20 or later.
 
 ## Publishing
 
-From this directory, bump `version` in `package.json`, then:
-
-```sh
-npm publish
-```
+Bump `version` in `package.json` and land it on `main`. The [Publish npm package](../.github/workflows/publish-npm.yml) workflow publishes any version not yet on npm, through npm trusted publishing (no token).
