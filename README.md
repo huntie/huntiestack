@@ -27,11 +27,11 @@ This repo ([huntiestack](https://github.com/huntie/huntiestack)) is a public sta
 Install all three skills into your home directory, then ask your agent to set up a devroot of your own:
 
 ```sh
-npx skills add huntie/huntiestack --skill '*' -g
+npx huntiestack
 /setup-devroot
 ```
 
-This fetches `devroot-template-latest/` from this repo, installs [skills](https://github.com/huntie/skills), writes the initial commit, and runs the minimal workspace setup script.
+`npx huntiestack` runs `npx skills add huntie/huntiestack --skill '*' -g`, leaving you to pick which agents to install to. `/setup-devroot` then fetches `devroot-template-latest/` from this repo, installs [skills](https://github.com/huntie/skills), writes the initial commit, and runs the minimal workspace setup script.
 
 #### This is a starting point!
 

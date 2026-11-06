@@ -1,0 +1,27 @@
+{
+  "name": "huntiestack",
+  "version": "0.1.0",
+  "description": "Shortcut for installing huntiestack via npx skills",
+  "license": "MIT",
+  "author": "Alex Hunt",
+  "homepage": "https://github.com/huntie/huntiestack#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huntie/huntiestack.git",
+    "directory": "npm"
+  },
+  "type": "module",
+  "bin": {
+    "huntiestack": "bin/huntiestack.mjs"
+  },
+  "files": [
+    "bin"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=22.20.0"
+  }
+}
