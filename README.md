@@ -18,7 +18,7 @@ huntiestack is an opinionated dev setup revolving around the `devroot` repo — 
 - An refined commit workflow for high quality PRs and **Meta-like source control** (optional).
 - All of this, portable across sessions and machines, meaning you can trivially set up bots that **behave like you**.
 
-This repo ([huntiestack](https://github.com/huntie/huntiestack)) is a public starter kit for this setup, mirrored from my personal `huntie/devroot` repo (private).
+This repo ([huntiestack](https://github.com/huntie/huntiestack)) is a public starter kit for this setup, mirrored from my personal `huntie/devroot` repo.
 
 ## Get started
 
