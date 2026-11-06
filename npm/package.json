@@ -1,7 +1,7 @@
 {
   "name": "huntiestack",
   "version": "0.1.0",
-  "description": "Shortcut for installing huntiestack via npx skills",
+  "description": "Build a single agent-first dev workspace",
   "license": "MIT",
   "author": "Alex Hunt",
   "homepage": "https://github.com/huntie/huntiestack#readme",
