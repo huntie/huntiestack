@@ -16,26 +16,27 @@ huntiestack is an opinionated dev setup revolving around the `devroot` repo — 
 
 This repo ([huntiestack](https://github.com/huntie/huntiestack)) is a public starter kit for this setup, mirrored from my personal `huntie/devroot` repo (private).
 
-### Principles
-
-- **One development monorepo.** I often work across more than one open source repo to accomplish an idea. Agent sessions rooted at `~/devroot` are empowered to work across these. My `dotfiles` and agent skills can be maintained continuously in the same session. Bug fixing something I just saw in Expo or React Native is **zero friction**.
-- **Shared config, skills, and context across machines.** One clone carries my entire dev setup to a Mac, a dev server, or a cloud agent environment. Skills load from the committed agent directories with no install step. `vault` is a live, intentionally updated knowledge base.
-- **Stacked version control and targeted FB-isms.** Scripts, skills, and IDE setup smoothing over daily workflows and a purposeful developer loop — for Git or [Sapling](https://sapling-scm.com/).
-
 ## Get started
 
-Install all three skills into your home directory, then ask your agent to set up a devroot of your own:
+Install all huntiestack skills (this is a shortcut for `npx skills add huntie/huntiestack`):
 
-```sh
-npx huntiestack
-/setup-devroot
-```
+    npx huntiestack
 
-`npx huntiestack` runs `npx skills add huntie/huntiestack --skill '*' -g`, leaving you to pick which agents to install to. `/setup-devroot` then fetches `devroot-template-latest/` from this repo, installs [skills](https://github.com/huntie/skills), writes the initial commit, and runs the minimal workspace setup script.
+Then, ask your agent to set up your devroot repo:
+
+    /setup-devroot
+
+`/setup-devroot` fetches `devroot-template-latest/`, installs [skills](https://github.com/huntie/skills), writes the initial commit, and runs the minimal workspace setup script.
 
 #### This is a starting point!
 
 Everyone's dev setup is different. `/setup-devroot` gives you a folder structure, control plane scripts, and the `vault` repo. You're free to customise the vault as you need, as well as to uninstall my skills in `skills-lock.json` and fork them in your `skills/` folder. Build what works for you 💯.
+
+## Principles
+
+- **One development monorepo.** I often work across more than one open source repo to accomplish an idea. Agent sessions rooted at `~/devroot` are empowered to work across these. My `dotfiles` and agent skills can be maintained continuously in the same session. Bug fixing something I just saw in Expo or React Native is **zero friction**.
+- **Shared config, skills, and context across machines.** One clone carries my entire dev setup to a Mac, a dev server, or a cloud agent environment. Skills load from the committed agent directories with no install step. `vault` is a live, intentionally updated knowledge base.
+- **Stacked version control and targeted FB-isms.** Scripts, skills, and IDE setup smoothing over daily workflows and a purposeful developer loop — for Git or [Sapling](https://sapling-scm.com/).
 
 ## Use directly or take inspiration
 
