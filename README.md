@@ -18,7 +18,7 @@ This repo ([huntiestack](https://github.com/huntie/huntiestack)) is a public sta
 
 ## Get started
 
-Install all huntiestack skills (this is a shortcut for `npx skills add huntie/huntiestack`):
+Install all huntiestack skills (shortcut for `npx skills add huntie/huntiestack`):
 
     npx huntiestack
 
@@ -26,7 +26,7 @@ Then, ask your agent to set up your devroot repo:
 
     /setup-devroot
 
-`/setup-devroot` fetches `devroot-template-latest/`, installs [skills](https://github.com/huntie/skills), writes the initial commit, and runs the minimal workspace setup script.
+The setup skill fetches `devroot-template-latest/`, installs [skills](https://github.com/huntie/skills), writes the initial commit, and runs the minimal workspace setup script.
 
 #### This is a starting point!
 
