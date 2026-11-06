@@ -1,6 +1,6 @@
 {
   "name": "huntiestack",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Build a single agent-first dev workspace",
   "license": "MIT",
   "author": "Alex Hunt",
