@@ -12,7 +12,7 @@
 
 huntiestack is an opinionated dev setup revolving around the `devroot` repo — a single private mega-workspace for all development work, designed to replace your traditional `~/Development` folder.
 
-`devroot` gives your agent the **right frame** to work in: a folder structure, scripts, and skills empowering it to checkout your projects **and work across them**. Context is stored in a private shared `vault` providing **self-improving personal knowledge**. All of this, portable across sessions and machines.
+`devroot` gives your agent a **superpowered frame** to work in: a folder structure, scripts, and skills empowering it to checkout your projects **and work across them**. Context is stored in a private shared `vault` providing **self-improving personal knowledge**. All of this, portable across sessions and machines.
 
 This repo ([huntiestack](https://github.com/huntie/huntiestack)) is a public starter kit for this setup, mirrored from my personal `huntie/devroot` repo (private).
 
