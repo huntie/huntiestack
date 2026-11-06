@@ -15,7 +15,7 @@ huntiestack is an opinionated dev setup revolving around the `devroot` repo — 
 `devroot` gives your agent a **superpowered frame** to work in:
 - A folder structure, scripts, and skills empowering it to checkout your projects **and work across them**.
 - Context stored in a private shared `vault` providing **self-improving personal knowledge**.
-- An refined commit workflow for creating high quality PRs and **Meta-like source control** (optional).
+- An refined commit workflow for high quality PRs and **Meta-like source control** (optional).
 - All of this, portable across sessions and machines, meaning you can trivially set up bots that **behave like you**.
 
 This repo ([huntiestack](https://github.com/huntie/huntiestack)) is a public starter kit for this setup, mirrored from my personal `huntie/devroot` repo (private).
