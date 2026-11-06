@@ -1,3 +1,3 @@
 # huntiestack setup skills
 
-Skills installed to `devroot` are separately published at https://github.com/huntie/skills and https://github.com/huntie/skills-pstack-vendored.
+Skills installed to a fresh `devroot` are published separately at [huntie/skills](https://github.com/huntie/skills) and [huntie/skills-pstack-vendored](https://github.com/huntie/skills-pstack-vendored).
