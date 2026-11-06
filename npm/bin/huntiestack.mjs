@@ -9,10 +9,14 @@ if (major < 22 || (major === 22 && minor < 20)) {
 }
 
 const args = process.argv.slice(2);
+const uninstall = args[0] === 'uninstall';
+const skillsArgs = uninstall
+  ? ['remove', 'huntie/huntiestack', '-g', ...args.slice(1)]
+  : ['add', 'huntie/huntiestack', '--skill', '*', '-g', ...args];
 const child = spawn(
   'npx',
   // --package overrides the npm_config_package an outer npx sets.
-  ['-y', '--package', 'skills@1', '--', 'skills', 'add', 'huntie/huntiestack', '--skill', '*', '-g', ...args],
+  ['-y', '--package', 'skills@1', '--', 'skills', ...skillsArgs],
   { stdio: 'inherit' },
 );
 
@@ -26,7 +30,7 @@ child.on('exit', (code, signal) => {
     process.kill(process.pid, signal);
     return;
   }
-  if (code === 0 && !args.some((arg) => arg === '-l' || arg === '--list')) {
+  if (code === 0 && !uninstall && !args.some((arg) => arg === '-l' || arg === '--list')) {
     console.log('\nNext: open your agent and run /setup-devroot');
   }
   process.exit(code ?? 1);

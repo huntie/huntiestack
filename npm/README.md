@@ -10,6 +10,12 @@ npx huntiestack
 
 Follow prompts, then open your agent and run `/setup-devroot`.
 
+To remove the setup skills again:
+
+```sh
+npx huntiestack uninstall
+```
+
 ## Requirements
 
 macOS or Linux, and Node.js 22.20 or later.
