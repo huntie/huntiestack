@@ -36,7 +36,11 @@ The setup skill fetches `devroot-template-latest/`, installs [skills](https://gi
 
 Everyone's dev setup is different. `/setup-devroot` gives you a folder structure, control plane scripts, and the `vault` repo. You're free to customise the vault as you need, as well as to uninstall my skills in `skills-lock.json` and fork them in your `skills/` folder. Build what works for you 💯.
 
-## Principles
+## How I use devroot
+
+[TODO: Screenshots!]
+
+### Principles
 
 - **One development monorepo.** I often work across more than one open source repo to accomplish an idea. Agent sessions rooted at `~/devroot` are empowered to work across these. My `dotfiles` and agent skills can be maintained continuously in the same session. Bug fixing something I just saw in Expo or React Native is **zero friction**.
 - **Shared config, skills, and context across machines.** One clone carries my entire dev setup to a Mac, a dev server, or a cloud agent environment. Skills load from the committed agent directories with no install step. `vault` is a live, intentionally updated knowledge base.
