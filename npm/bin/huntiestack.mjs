@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import { styleText } from 'node:util';
 
 const [major, minor] = process.versions.node.split('.').map(Number);
 if (major < 22 || (major === 22 && minor < 20)) {
@@ -31,7 +32,24 @@ child.on('exit', (code, signal) => {
     return;
   }
   if (code === 0 && !uninstall && !args.some((arg) => arg === '-l' || arg === '--list')) {
-    console.log('\nNext: open your agent and run /setup-devroot');
+    printBox([
+      ['huntiestack skills installed 🎉', (text) => styleText('bold', text)],
+      ['https://github.com/huntie/huntiestack', (text) => styleText('grey', text)],
+      ['', (text) => text],
+      ['Next step:', (text) => styleText('bold', text)],
+      ['Open your agent and run /setup-devroot', (text) => text.replace('/setup-devroot', styleText('cyan', '/setup-devroot'))],
+    ]);
   }
   process.exit(code ?? 1);
 });
+
+function printBox(lines) {
+  const width = Math.max(...lines.map(([text]) => text.length));
+  const border = (text) => styleText('dim', text);
+  console.log();
+  console.log(border(`╭${'─'.repeat(width + 4)}╮`));
+  for (const [text, style] of lines) {
+    console.log(`${border('│')}  ${style(text)}${' '.repeat(width - text.length)}  ${border('│')}`);
+  }
+  console.log(border(`╰${'─'.repeat(width + 4)}╯`));
+}
